@@ -1,0 +1,265 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = "postgresql://postgres:scott@localhost:5432/redsync"
+}
+
+enum Role {
+  super_admin
+  admin
+  qa_team
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String?
+  email     String   @unique
+  password  String
+  role      Role     @default(admin)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  coaRecords CoaRecord[]
+  questionnaires Questionnaire[]
+  auditLogs  AuditLog[]
+}
+
+model CoaRecord {
+  id               String   @id @default(uuid())
+  fileName         String   // Original PDF filename
+  sampleId         String?  // Sample # (e.g., M20241803)
+  batchId          String?  // Batch ID (e.g., BA001256)
+  extractionPhase  Int      @default(1)
+  
+  // Core chemical parameters
+  ai               String?  // Acetone Insoluble
+  av               String?  // Acid Value
+  pov              String?  // Peroxide Value
+  colorGardner10   String?  // Color Gardner (10% dil.)
+  viscosity25      String?  // Viscosity at 25°C
+  hexaneInsolubles String?  // Hexane Insolubles
+  moisture         String?  // Moisture
+  
+  // Heavy metals
+  lead             String?  // Lead
+  mercury          String?  // Mercury
+  arsenic          String?  // Arsenic
+  iron             String?  // Iron (Fe)
+  
+  // Microbiology
+  enterobacteriaceae String? // Enterobacteriaceae
+  totalPlateCount    String? // Total Plate Count
+  yeastsMolds        String? // Yeasts & Molds
+  yeasts             String? // Yeasts
+  moulds             String? // Moulds
+  salmonella25g      String? // Salmonella (in 25g)
+  salmonella250g     String? // Salmonella (in 250g)
+  eColi              String? // E. coli
+  listeria25g        String? // Listeria monocytogenes (in 25g)
+  
+  // Phospholipids (PL)
+  pc               String?  // Phosphatidylcholine
+  pe               String?  // Phosphatidylethanolamine
+  lpc              String?  // Lysophosphatidylcholine
+  pa               String?  // Phosphatidic Acid
+  pi               String?  // Phosphatidylinositol
+  p                String?  // Phosphorus
+  pl               String?  // Phospholipids
+  
+  // Contaminants
+  pah4             String?  // PAH4
+  ochratoxinA      String?  // Ochratoxin A
+  pesticides       String?  // Pesticides
+  heavyMetals      String?  // Heavy Metals
+  peanutContent    String?  // Peanut content
+  
+  // GMO
+  gmoTest          String?  // PCR, 50 cycl. (GMO), 35S/NOS/FMV
+  
+  // Other chemical parameters
+  colorGardnerAsIs String?  // Color Gardner (As is)
+  colorIodine      String?  // Color Iodine
+  tolueneInsolubles String? // Toluene Insolubles
+  specificGravity  String?  // Specific gravity
+  ffaAtLoading     String?  // FFA (%Oleic) at loading
+  iodineValue      String?  // Iodine value
+  soapContent      String?  // Soap content
+  insolubleMatter  String?  // Insoluble matters
+  moistureInsolubles String? // Moisture and insolubles
+  
+  // Store any additional extracted fields as JSON
+  additionalFields Json?
+  
+  // Metadata
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([sampleId])
+  @@index([batchId])
+  @@index([createdAt])
+}
+
+model ImportExportRecord {
+  id               String   @id @default(uuid())
+  sourceFile       String
+  company          String?  // Changed from country - stores exporter name for exports, supplier name for imports
+  flow             String   // "import" or "export"
+  hsCode           String?
+  productName      String?
+  importerExporter String?
+  quantity         Float?
+  price            Float?
+  incoterm         String?
+  currency         String?
+  competitorName   String?
+  matchedProduct   String?
+  matchConfidence  Float?
+  rawText          String?
+  metadata         Json?
+  userId           String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([flow])
+  @@index([hsCode])
+  @@index([company])
+  @@index([createdAt])
+}
+
+// Company information for branding and contact details
+model CompanyInfo {
+  id            String   @id @default(uuid())
+  companyName   String?
+  address       String?
+  postalCode    String?
+  city          String?
+  country       String?
+  contactPerson String?
+  email         String?
+  phone         String?
+  logoPath      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// COA processing settings
+model COASettings {
+  id                   String   @id @default(uuid())
+  defaultColumnMapping Json?
+  extractionRules      Json?
+  fileProcessingLimits Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+// Import/Export analysis settings
+model ImportExportSettings {
+  id                  String   @id @default(uuid())
+  hsCodes             String[]
+  competitorMapping   Json?
+  currencyPreferences Json?
+  filterPresets       Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// Questionnaire automation settings
+model QuestionnaireSettings {
+  id                String   @id @default(uuid())
+  predefinedAnswers Json?
+  skipLogicRules    Json?
+  certifications    String[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// AI API settings
+model AISettings {
+  id                   String   @id @default(uuid())
+  openAiKey            String
+  model                String
+  confidenceThreshold  Float    @default(0.0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+// System preferences
+model SystemPreferences {
+  id                  String   @id @default(uuid())
+  dateFormat          String
+  language            String
+  defaultExportFormat String
+  backupConfig        Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// Audit logs for tracking changes
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  module    String
+  timestamp DateTime @default(now())
+
+  @@index([userId])
+  @@index([module])
+  @@index([timestamp])
+}
+
+// Stores certifications and their details for skip logic
+model Certification {
+  id        String   @id @default(uuid())
+  name      String
+  details   String?
+  validFrom DateTime?
+  validTo   DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Stores metadata for each uploaded and processed questionnaire
+model Questionnaire {
+  id            String   @id @default(uuid())
+  originalFile  String
+  processedFile String?
+  status        String   @default("uploaded") // uploaded | processing | processed | failed | draft
+  metadata      Json?
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  answers QuestionnaireAnswer[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Stores history of generated answers for re-use
+model QuestionnaireAnswer {
+  id              String        @id @default(uuid())
+  questionnaireId String
+  question        String
+  answer          String?
+  source          String        // company_info | certification | ai | skip
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  questionnaire Questionnaire @relation(fields: [questionnaireId], references: [id], onDelete: Cascade)
+
+  @@index([questionnaireId])
+}
