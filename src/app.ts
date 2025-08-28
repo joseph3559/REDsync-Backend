@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
-import { PrismaClient, Role } from "../generated/prisma";
+import { PrismaClient, Role } from "../generated/prisma/index.js";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 
@@ -48,12 +48,12 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 // Feature routes
-import coaRouter from "./routes/coa";
+import coaRouter from "./routes/coa.js";
 import importExportRouter from "./routes/importExport.js";
-import questionnairesRouter from "./routes/questionnaires";
-import importExportStatsRouter from "./routes/importExportStats";
-import dashboardRouter from "./routes/dashboard";
-import settingsRouter from "./routes/settings";
+import questionnairesRouter from "./routes/questionnaires.js";
+import importExportStatsRouter from "./routes/importExportStats.js";
+import dashboardRouter from "./routes/dashboard.js";
+import settingsRouter from "./routes/settings.js";
 
 app.use("/api/coa", coaRouter);
 app.use("/api/coa-database", coaRouter);

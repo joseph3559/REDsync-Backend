@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { PrismaClient } from "../../generated/prisma";
-import { authenticate } from "../utils/jwtAuth";
+import { PrismaClient } from "../../generated/prisma/index.js";
+import { authenticate } from "../utils/jwtAuth.js";
 
 const router = Router();
 const prisma = new PrismaClient();

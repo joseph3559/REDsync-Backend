@@ -269,8 +269,8 @@ def find_ids(text: str) -> dict:
     sample_desc_match = re.search(r"Sample\s+description:\s*([^\n\r]*)", text, flags=re.IGNORECASE)
     if sample_desc_match:
         desc_text = sample_desc_match.group(1)
-        # Look for M followed by 8 digits in the description (with or without space)
-        sample_in_desc = re.search(r"\bM\s*\d{8}\b", desc_text)
+        # Look for M followed by 8 digits with optional decimal extension (e.g., M20251714.1)
+        sample_in_desc = re.search(r"\bM\s*\d{8}(?:\.\d+)?\b", desc_text)
         if sample_in_desc:
             sample_id = sample_in_desc.group(0).replace(' ', '')  # Remove any spaces
             print(f"Sample ID extracted from description: '{sample_id}' from '{desc_text.strip()}'", file=sys.stderr)
@@ -280,24 +280,31 @@ def find_ids(text: str) -> dict:
         sample_no_match = re.search(r"Sample\s+No:\s*([^\n\r]*)", text, flags=re.IGNORECASE)
         if sample_no_match:
             sample_no_text = sample_no_match.group(1)
-            # Look for M followed by 8 digits (with or without space)
-            sample_in_no = re.search(r"\bM\s*\d{8}\b", sample_no_text)
+            # Look for M followed by 8 digits with optional decimal extension (e.g., M20251714.2)
+            sample_in_no = re.search(r"\bM\s*\d{8}(?:\.\d+)?\b", sample_no_text)
             if sample_in_no:
                 sample_id = sample_in_no.group(0).replace(' ', '')  # Remove any spaces
                 print(f"Sample ID extracted from 'Sample No': '{sample_id}' from '{sample_no_text.strip()}'", file=sys.stderr)
     
     # Priority 3: If not found in specific fields, search entire text
     if not sample_id:
-        # Look for M followed by optional space and 8 digits
-        sample_match = re.search(r"\bM\s*\d{8}\b", text)
+        # Look for M followed by optional space and 8 digits with optional decimal extension
+        sample_match = re.search(r"\bM\s*\d{8}(?:\.\d+)?\b", text)
         if sample_match:
             sample_id = sample_match.group(0).replace(' ', '')  # Remove any spaces
             print(f"Sample ID extracted from general text: '{sample_id}'", file=sys.stderr)
     
-    # Extract batch ID
-    batch_match = re.search(r"\bBA\d{6}\b", text)
-    if batch_match:
-        batch_id = batch_match.group(0)
+    # Extract batch ID - support both BA and CS formats
+    batch_patterns = [
+        r"\b(BA\d{6})\b",              # BA001256 format
+        r"\b(CS\d{2}-\d{2}-\d{4})\b"   # CS30-00-1195 format
+    ]
+    
+    for pattern in batch_patterns:
+        batch_match = re.search(pattern, text)
+        if batch_match:
+            batch_id = batch_match.group(1)
+            break
     
     return {
         "sample_id": sample_id,
@@ -405,6 +412,12 @@ def clean_coa_value(value: str, parameter_name: str = "") -> str:
         
         return numeric_part
     
+    # Check for scientific notation first - if found, preserve it for microbiology processing
+    scientific_notation_match = re.search(r"\d+[.,]?\d*E[+-]?\d+", value, re.IGNORECASE)
+    if scientific_notation_match:
+        # For scientific notation, return the original value so microbiology processing can handle it
+        return value
+    
     # Extract numeric value with decimal handling
     # Look for patterns like: 19,3  or  65.3  or  4183
     numeric_match = re.search(r"(\d+(?:[,\.]\d+)?)", value)
@@ -485,15 +498,33 @@ def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
             out[key] = av_val
 
     # POV (Peroxide value)
-    # Sometimes appears multiple times. Prefer the occurrence that contains a numeric/ND/limit value.
+    # Sometimes appears multiple times. Prefer the occurrence that contains actual measurement units.
     pov_val = None
     matches = list(re.finditer(r"Peroxide\s+value\s*([^\n\r]*)", text, flags=re.IGNORECASE))
+    
+    # First, look for matches with actual measurement units (meq, mg/kg, etc.)
     for m in matches:
         candidate = m.group(1).strip()
-        if re.search(r"\d|not\s+detected|less\s+than", candidate, flags=re.IGNORECASE):
+        # Prioritize matches with measurement units
+        if re.search(r"\d+[,.]?\d*\s*(meq|mg|µg|ug)\s*[O2/kg|/kg|/g]", candidate, flags=re.IGNORECASE):
             pov_val = candidate
+            print(f"POV: Found measurement with units: '{pov_val}'", file=sys.stderr)
+            break
+    
+    # If no unit match, look for numeric values with "not detected" or "less than"
+    if pov_val is None:
+        for m in matches:
+            candidate = m.group(1).strip()
+            if re.search(r"(\d|not\s+detected|less\s+than)", candidate, flags=re.IGNORECASE) and not re.search(r"ISO\s+\d+", candidate, flags=re.IGNORECASE):
+                pov_val = candidate
+                print(f"POV: Found numeric/ND value: '{pov_val}'", file=sys.stderr)
+                break
+    
+    # Last resort: use the last match if available
     if pov_val is None and matches:
         pov_val = matches[-1].group(1).strip()
+        print(f"POV: Using last match as fallback: '{pov_val}'", file=sys.stderr)
+    
     if pov_val:
         key = map_to_available_key(["POV", "Peroxide Value"], columns)
         if key:
@@ -622,21 +653,27 @@ def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
             except (ValueError, TypeError):
                 pass
 
-    # Calculate Heavy Metals sum (Arsenic + Cadmium + Lead + Mercury - NOT Iron)
+    # Calculate Heavy Metals sum ONLY if there's an explicit Heavy Metals section in the document
     heavy_metals_key = map_to_available_key(["Heavy Metals"], columns)
     if heavy_metals_key:
-        heavy_metals_sum = 0
-        heavy_metals_components = {}
+        # Check if document explicitly mentions "Heavy Metals" as a section
+        heavy_metals_section_exists = bool(re.search(r"Heavy\s+Metals", text, flags=re.IGNORECASE))
         
-        # Only include specific metals for Heavy Metals calculation
-        for metal in ['Arsenic', 'Cadmium', 'Lead', 'Mercury']:
-            if metal in metals_data:
-                heavy_metals_sum += metals_data[metal]
-                heavy_metals_components[metal] = metals_data[metal]
-        
-        if heavy_metals_components:  # At least one heavy metal found
-            out[heavy_metals_key] = str(heavy_metals_sum)
-            print(f"Heavy Metals calculation: {heavy_metals_components} = {heavy_metals_sum}", file=sys.stderr)
+        if heavy_metals_section_exists:
+            heavy_metals_sum = 0
+            heavy_metals_components = {}
+            
+            # Only include specific metals for Heavy Metals calculation
+            for metal in ['Arsenic', 'Cadmium', 'Lead', 'Mercury']:
+                if metal in metals_data:
+                    heavy_metals_sum += metals_data[metal]
+                    heavy_metals_components[metal] = metals_data[metal]
+            
+            if heavy_metals_components:  # At least one heavy metal found
+                out[heavy_metals_key] = str(heavy_metals_sum)
+                print(f"Heavy Metals calculation (explicit section found): {heavy_metals_components} = {heavy_metals_sum}", file=sys.stderr)
+        else:
+            print(f"Heavy Metals: No explicit 'Heavy Metals' section found, skipping calculation even though individual metals exist", file=sys.stderr)
 
     # Microbiology
     ent_val = capture(r"Enterobacteriaceae\s*([^\n\r]*)")
@@ -644,9 +681,58 @@ def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
         key = map_to_available_key(["Enterobacteriaceae"], columns)
         if key:
             out[key] = ent_val
-    # Total plate count - extract '160 cfu/g' etc.
+    
+    # Cronobacter - handle various formats including TLR lab format
+    cronobacter_val = None
+    
+    # Pattern 1: Standard format "Cronobacter spp. negative" etc.
+    cronobacter_standard = capture(r"Cronobacter\s+(?:spp\.?|species)?\s*([^\n\r]*)")
+    if cronobacter_standard:
+        cronobacter_val = cronobacter_standard
+        print(f"Cronobacter: Found standard format: '{cronobacter_val}'", file=sys.stderr)
+    
+    # Pattern 2: TLR lab format "Cronobacter (E. sakazakii) absent in 10 g"
+    if not cronobacter_val:
+        cronobacter_tlr = capture(r"Cronobacter\s*\([^)]*\)\s*([^\n\r]*)")
+        if cronobacter_tlr:
+            cronobacter_val = cronobacter_tlr
+            print(f"Cronobacter: Found TLR format: '{cronobacter_val}'", file=sys.stderr)
+    
+    # Pattern 3: General Cronobacter mention
+    if not cronobacter_val:
+        cronobacter_general = capture(r"Cronobacter\s*([^\n\r]*)")
+        if cronobacter_general:
+            cronobacter_val = cronobacter_general
+            print(f"Cronobacter: Found general format: '{cronobacter_val}'", file=sys.stderr)
+    
+    if cronobacter_val:
+        # Clean up the value - convert various absent formats to "negative"
+        cleaned_cronobacter = cronobacter_val.strip()
+        
+        # Handle spaced text like "abse n t i n 1 0 g"
+        cleaned_cronobacter = re.sub(r'\s+', ' ', cleaned_cronobacter)  # Normalize spaces
+        
+        # Convert various "absent/negative" patterns to "negative"
+        patterns_for_negative = [
+            r"absent\s+in\s+\d+\s*g",  # "absent in 10 g"
+            r"abse.*?n.*?t.*?i.*?n.*?\d+.*?g",  # "abse n t i n 1 0 g" with flexible spacing
+            r"negative",
+            r"not\s+detected",
+            r"nd\b"
+        ]
+        
+        for pattern in patterns_for_negative:
+            if re.search(pattern, cleaned_cronobacter, re.IGNORECASE):
+                cleaned_cronobacter = "negative"
+                break
+        
+        key = map_to_available_key(["Cronobacter", "Cronobacter spp.", "Cronobacter (E. sakazakii)"], columns)
+        if key:
+            out[key] = cleaned_cronobacter
+            print(f"Cronobacter: Final cleaned value: '{cleaned_cronobacter}'", file=sys.stderr)
+    # Total plate count - extract '160 cfu/g', '1,9E+04 cfu/g' etc. (supports scientific notation)
     tpc_val = None
-    m_tpc = re.search(r"Total\s+plate\s+count[^\n\r]*?(\d[\d\s\.,]*\s*cfu\/g)", text, flags=re.IGNORECASE)
+    m_tpc = re.search(r"Total\s+plate\s+count[^\n\r]*?(\d+[.,]?\d*(?:E[+-]?\d+)?\s*cfu\/g)", text, flags=re.IGNORECASE)
     if m_tpc:
         tpc_val = m_tpc.group(1).strip()
     if tpc_val:
@@ -805,8 +891,9 @@ def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
 
 def process_pesticide_review(result: dict, raw_text: str) -> dict:
     """
-    Check for pesticide data and set to 'review' if mixed results found.
-    Looks for patterns indicating both detected and not detected pesticides.
+    Check for pesticide data and set to 'Negative' when not detected or nothing detected.
+    Looks for patterns indicating pesticide test results.
+    Updated: If not detected or nothing detected, say 'Negative' (not review)
     """
     pesticide_fields = ['Pesticides', 'pesticides']
     
@@ -814,33 +901,359 @@ def process_pesticide_review(result: dict, raw_text: str) -> dict:
         if field in result:
             continue  # Skip if already processed
             
-        # Look for pesticide mentions in the text
-        pesticide_patterns = [
-            r"pesticide[s]?\s*(?:residue[s]?)?\s*([^\n\r]*)",
-            r"organochlorine[s]?\s*([^\n\r]*)", 
-            r"organophosphate[s]?\s*([^\n\r]*)",
-            r"chlorpyrifos\s*([^\n\r]*)",
-            r"dimethoate\s*([^\n\r]*)",
-            r"malathion\s*([^\n\r]*)"
+        # First check for specific "nothing detected" or "performed according annex" patterns
+        # These should only match when it's clear ALL pesticides were not detected
+        nothing_detected_patterns = [
+            r"performed\s+according\s+(?:to\s+)?annex[^\n\r]*nothing\s+detected",
+            r"pesticide\s+(?:residue|screening|analysis)[^\n\r]*nothing\s+detected",
+            r"pesticide\s+(?:residue|screening|analysis)[^\n\r]*not\s+detected",
+            r"nothing\s+detected[^\n\r]*pesticide\s+(?:residue|screening|analysis)",
+            r"all\s+pesticide[s]?[^\n\r]*not\s+detected",
+            r"no\s+pesticide[s]?\s+(?:residue[s]?|detected)",
+            r"pesticide[s]?\s*:\s*(?:all\s+)?(?:negative|not\s+detected|nothing\s+detected)(?:\s|$)"
         ]
         
+        # Check for explicit "nothing detected" cases first (only for comprehensive negative results)
+        for pattern in nothing_detected_patterns:
+            if re.search(pattern, raw_text, flags=re.IGNORECASE):
+                result['Pesticides'] = 'Negative'
+                return result
+        
+        # Look for specific pesticide result patterns (avoid false positives from reference numbers/standards)
         detected_count = 0
         not_detected_count = 0
         
-        for pattern in pesticide_patterns:
-            matches = re.finditer(pattern, raw_text, flags=re.IGNORECASE | re.MULTILINE)
-            for match in matches:
-                value = match.group(1).strip().lower()
-                if 'not detected' in value or 'negative' in value or '<' in value:
-                    not_detected_count += 1
-                elif 'detected' in value or 'positive' in value or any(c.isdigit() for c in value):
-                    detected_count += 1
+        # Pattern 1: Look for "Pesticide XX: ... Not detected" or "Pesticide XX: ... Detected"
+        pesticide_results = re.findall(r"pesticide\s+\d+[^:]*:[^.]*?((?:not\s+detected|detected|negative|positive))", raw_text, flags=re.IGNORECASE | re.DOTALL)
+        for pesticide_result in pesticide_results:
+            pesticide_result = pesticide_result.strip().lower()
+            if 'not detected' in pesticide_result or 'negative' in pesticide_result:
+                not_detected_count += 1
+            elif 'detected' in pesticide_result or 'positive' in pesticide_result:
+                detected_count += 1
         
-        # If we have both detected and not detected, mark for review
-        if detected_count > 0 and not_detected_count > 0:
+        # Pattern 2: Look for specific pesticide compounds with results
+        pesticide_compounds = ['organochlorine', 'organophosphate', 'chlorpyrifos', 'dimethoate', 'malathion', 'atrazine', 'glyphosate']
+        for compound in pesticide_compounds:
+            # Look for compound followed by a result within reasonable distance
+            compound_matches = re.finditer(rf"{compound}[^.]*?([^.]*?(?:not\s+detected|detected|negative|positive|\d+[.,]?\d*\s*(?:mg/kg|ppm|ppb|µg/kg)))", raw_text, flags=re.IGNORECASE | re.DOTALL)
+            for match in compound_matches:
+                result_text = match.group(1).strip().lower()
+                if 'not detected' in result_text or 'negative' in result_text:
+                    not_detected_count += 1
+                elif ('detected' in result_text and 'not detected' not in result_text) or 'positive' in result_text:
+                    detected_count += 1
+                elif re.search(r'\d+[.,]?\d*\s*(?:mg/kg|ppm|ppb|µg/kg)', result_text) and '<' not in result_text:
+                    # Numeric concentration values indicate detection
+                    detected_count += 1
+                elif '<' in result_text and re.search(r'\d+[.,]?\d*', result_text):
+                    # Values like "< 0.01 mg/kg" indicate not detected
+                    not_detected_count += 1
+        
+        # Logic: If any "not detected" found and no clear detections, say 'Negative'
+        if not_detected_count > 0 and detected_count == 0:
+            result['Pesticides'] = 'Negative'
+        elif detected_count > 0:
+            # Only set to 'review' if there are actual detections
             result['Pesticides'] = 'review'
-        elif not_detected_count > 0 and detected_count == 0:
-            result['Pesticides'] = 'negative'
+            
+    return result
+
+
+def process_moh_mosh_moah(result: dict, raw_text: str) -> dict:
+    """
+    Process MOH (MOSH/MOAH) data.
+    Check 'Sum MOAH', if < 2 show value, otherwise show 'review'.
+    """
+    # Look for Sum MOAH values
+    moah_patterns = [
+        r"Sum\s+MOAH[^\n\r]*?(\d+(?:[.,]\d+)?)\s*(?:mg/kg|ppm)",
+        r"MOAH[^\n\r]*Sum[^\n\r]*?(\d+(?:[.,]\d+)?)\s*(?:mg/kg|ppm)",
+        r"Sum\s+of\s+MOAH[^\n\r]*?(\d+(?:[.,]\d+)?)\s*(?:mg/kg|ppm)"
+    ]
+    
+    for pattern in moah_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            value_str = match.group(1).replace(',', '.')
+            try:
+                value = float(value_str)
+                if value < 2:
+                    result['MOH (MOSH/MOAH)'] = value_str
+                else:
+                    result['MOH (MOSH/MOAH)'] = 'review'
+                break
+            except ValueError:
+                continue
+    
+    return result
+
+
+def process_soy_allergen(result: dict, raw_text: str) -> dict:
+    """
+    Process Soy Allergen data.
+    Check for Soy protein Content, if < 2.5 say 'Negative', otherwise 'review'.
+    """
+    # Look for Soy protein content values
+    soy_patterns = [
+        r"Soy\s+protein\s+[Cc]ontent[^\n\r]*?(\d+(?:[.,]\d+)?)\s*(?:mg/kg|ppm)",
+        r"Soy\s+protein[^\n\r]*?(\d+(?:[.,]\d+)?)\s*(?:mg/kg|ppm)",
+        r"Soy\s+allergen[^\n\r]*?(\d+(?:[.,]\d+)?)\s*(?:mg/kg|ppm)"
+    ]
+    
+    for pattern in soy_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            value_str = match.group(1).replace(',', '.')
+            try:
+                value = float(value_str)
+                if value < 2.5:
+                    result['Soy Allergen'] = 'Negative'
+                else:
+                    result['Soy Allergen'] = 'review'
+                break
+            except ValueError:
+                continue
+    
+    return result
+
+
+def process_cronobacter_spp(result: dict, raw_text: str) -> dict:
+    """
+    Process Cronobacter spp. data.
+    - If Cronobacter is mentioned and absent/not detected → 'Negative'
+    - If Cronobacter is mentioned and detected → 'Review'  
+    - If Cronobacter is not mentioned anywhere → Leave field blank
+    """
+    # Look for Cronobacter mentions
+    cronobacter_patterns = [
+        r"Cronobacter[^\n\r]*?(absent|not\s+detected|negative|detected|positive)",
+        r"Cronobacter\s+spp[^\n\r]*?(absent|not\s+detected|negative|detected|positive)"
+    ]
+    
+    for pattern in cronobacter_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            status = match.group(1).lower()
+            if 'absent' in status or 'not detected' in status or 'negative' in status:
+                result['Cronobacter spp.'] = 'Negative'
+            elif 'detected' in status or 'positive' in status:
+                result['Cronobacter spp.'] = 'Review'
+            break
+    
+    # If no explicit mention found, leave the field blank (don't set any default value)
+    # Only process if Cronobacter is actually mentioned in the document
+    
+    return result
+
+
+def parse_scientific_notation(value_str: str) -> float:
+    """
+    Parse scientific notation like '1,9E+04' or '1.9E+04' to regular float.
+    Examples:
+    - '1,9E+04' → 19000.0
+    - '2,5E+02' → 250.0
+    - '1.2E-03' → 0.0012
+    """
+    # Handle European decimal notation (comma instead of dot)
+    value_str = value_str.replace(',', '.')
+    
+    # Check if it's scientific notation
+    scientific_match = re.search(r'([+-]?\d+\.?\d*)E([+-]?\d+)', value_str, re.IGNORECASE)
+    if scientific_match:
+        base = float(scientific_match.group(1))
+        exponent = int(scientific_match.group(2))
+        return base * (10 ** exponent)
+    
+    # If not scientific notation, try regular float
+    regular_match = re.search(r'([+-]?\d+(?:[.,]\d+)?)', value_str)
+    if regular_match:
+        return float(regular_match.group(1).replace(',', '.'))
+    
+    raise ValueError(f"Could not parse numeric value from: {value_str}")
+
+
+def process_microbiology_values(result: dict, raw_text: str) -> dict:
+    """
+    Process Enterobacteriaceae, Coliforms, E coli values.
+    Handles scientific notation like '1,9E+04 cfu/g' (converts to 19000).
+    If result < 10, show 'Negative', otherwise show the actual value.
+    """
+    microbe_fields = ['Enterobacteriaceae', 'Coliforms (in 1g)', 'E. coli', 'Total Plate Count', 'Total Viable count']
+    
+    # Look for these values in raw text with both scientific notation and regular numbers
+    microbiology_patterns = {
+        'Total Plate Count': [
+            r'Total\s+plate\s+count[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
+            r'Total\s+plate\s+count[^0-9]*30°?C[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
+            r'TPC[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu'
+        ],
+        'Total Viable count': [
+            r'Total\s+viable\s+count[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
+            r'TVC[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu'
+        ],
+        'Enterobacteriaceae': [
+            r'Enterobacteriaceae[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',  # <10 or < 10
+            r'Enterobacteriaceae[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',      # Regular numbers
+            r'Enterobacteriaceae[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)',            # <10 without cfu
+            r'Enterobacteriaceae[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)'                 # Regular numbers without cfu
+        ],
+        'Coliforms (in 1g)': [
+            r'Coliforms?[^0-9]*(?:in\s+1\s?g)?[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
+            r'Coliforms?[^0-9]*(?:in\s+1\s?g)?[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
+            r'Coliforms?[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)',
+            r'Coliforms?[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)'
+        ],
+        'E. coli': [
+            r'E\.?\s*coli[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
+            r'E\.?\s*coli[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
+            r'E\.?\s*coli[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)',
+            r'E\.?\s*coli[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)'
+        ]
+    }
+    
+    # Search for scientific notation patterns in raw text
+    for field_name, patterns in microbiology_patterns.items():
+        if field_name in result and result[field_name]:
+            continue  # Skip if already processed
+            
+        for pattern in patterns:
+            match = re.search(pattern, raw_text, flags=re.IGNORECASE)
+            if match:
+                scientific_value = match.group(1)
+                try:
+                    # Handle "<" symbol for "less than" values (e.g., "<10", "< 10")
+                    if '<' in scientific_value:
+                        # Values like "<10" or "< 10" should be treated as "Negative"
+                        result[field_name] = 'Negative'
+                    else:
+                        numeric_value = parse_scientific_notation(scientific_value)
+                        if numeric_value < 10:
+                            result[field_name] = 'Negative'
+                        else:
+                            # Display as clean number without units
+                            result[field_name] = str(int(numeric_value))
+                    break  # Found a match, stop looking
+                except ValueError:
+                    continue
+    
+    # Process existing values that might already be in the result
+    for field in microbe_fields:
+        if field in result and result[field]:
+            value_str = str(result[field]).strip()
+            
+            # Skip if already processed as 'Negative'
+            if value_str.lower() == 'negative':
+                continue
+            
+            try:
+                # Handle "<" symbol for "less than" values
+                if '<' in value_str:
+                    # Values like "<10 cfu/g" should be treated as "Negative"
+                    result[field] = 'Negative'
+                else:
+                    # Try to parse scientific notation or regular numbers
+                    numeric_value = parse_scientific_notation(value_str)
+                    if numeric_value < 10:
+                        result[field] = 'Negative'
+                    else:
+                        # Display as clean number without units
+                        result[field] = str(int(numeric_value))
+            except ValueError:
+                # If we can't parse it, keep the original value
+                pass
+    
+    return result
+
+
+def process_batch_numbers(result: dict, raw_text: str) -> dict:
+    """
+    Handle batch numbers that start with BA or CS (e.g., CS30-00-1195, BA001256).
+    Also handle different lab formats like Disponent Number with CS batches.
+    """
+    if result.get('batch_id'):
+        return result  # Already found
+    
+    # Look for CS and BA batch patterns
+    batch_patterns = [
+        r"\b(CS\d{2}-\d{2}-\d{4})\b",  # CS30-00-1195 format
+        r"\b(BA\d{6})\b",              # BA001256 format
+        r"batch\s*#?\s*(CS\d{2}-\d{2}-\d{4})",  # batch # CS30-00-1625
+        r"Reference\s*:\s*batch\s*#?\s*(CS\d{2}-\d{2}-\d{4})",  # Reference : batch # CS30-00-1625
+        r"Disponent\s+Number[^\n\r]*batch\s*#?\s*(CS\d{2}-\d{2}-\d{4})"  # Disponent Number : M20252511, Reference : batch # CS30-00-1625
+    ]
+    
+    for pattern in batch_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            result['batch_id'] = match.group(1)
+            break
+            
+    return result
+
+
+def process_dioxins_data(result: dict, raw_text: str) -> dict:
+    """
+    Process dioxin-related data with specialized extraction patterns.
+    
+    1. Sum Dioxins (WHO-PCDD/F-TEQ) - from "WHO PCDD/F-TEQ incl. LOQ 2005 0,158 pg/g fat ±0,025"
+    2. Sum Dioxins and Dioxin Like PCB's (WHOPCDD/F-PCBTEQ) - from "WHO PCDD/F + DL-PCBs TEQ incl. LOQ 2005 0,271 pg/g fat ±0,046"
+    3. Sum PCB28, PCB52, PCB101, PCB138,PCB153 and PCB180 - from "PCB SUM (PCB 28, 52, 101, 138, 153, 180) incl.LOQ Less than 0,600 ng/g fat"
+    """
+    
+    # 1. Sum Dioxins (WHO-PCDD/F-TEQ) - Pattern: WHO PCDD/F-TEQ incl. LOQ 2005 0,158 pg/g fat ±0,025
+    dioxin_teq_patterns = [
+        r"WHO\s+PCDD/F-TEQ\s+incl\.\s+LOQ\s+\d+\s+(\d+[,\.]\d+)\s*pg/g\s+fat",
+        r"WHO\s+PCDD/F-TEQ\s+incl\.\s+LOQ\s+\d+\s+(\d+[,\.]\d+)\s*pg/g",
+        r"Sum\s+Dioxins\s+\(WHO-PCDD/F-TEQ\)[^\n\r]*?(\d+[,\.]\d+)\s*pg/g"
+    ]
+    
+    for pattern in dioxin_teq_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            value_str = match.group(1).replace(',', '.')
+            try:
+                float(value_str)  # Validate it's a number
+                result['Sum Dioxins (WHO-PCDD/F-TEQ)'] = value_str
+                break
+            except ValueError:
+                continue
+    
+    # 2. Sum Dioxins and Dioxin Like PCB's (WHOPCDD/F-PCBTEQ) - Pattern: WHO PCDD/F + DL-PCBs TEQ incl. LOQ 2005 0,271 pg/g fat ±0,046
+    dioxin_dlpcb_patterns = [
+        r"WHO\s+PCDD/F\s+\+\s+DL-PCBs\s+TEQ\s+incl\.\s+LOQ\s+\d+\s+(\d+[,\.]\d+)\s*pg/g\s+fat",
+        r"WHO\s+PCDD/F\s+\+\s+DL-PCBs\s+TEQ\s+incl\.\s+LOQ\s+\d+\s+(\d+[,\.]\d+)\s*pg/g",
+        r"Sum\s+Dioxins\s+and\s+Dioxin\s+Like\s+PCB['']?s[^\n\r]*?(\d+[,\.]\d+)\s*pg/g"
+    ]
+    
+    for pattern in dioxin_dlpcb_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            value_str = match.group(1).replace(',', '.')
+            try:
+                float(value_str)  # Validate it's a number
+                result['Sum Dioxins and Dioxin Like PCB\'s (WHOPCDD/F-PCBTEQ)'] = value_str
+                break
+            except ValueError:
+                continue
+    
+    # 3. Sum PCB28, PCB52, PCB101, PCB138,PCB153 and PCB180 - Pattern: PCB SUM (PCB 28, 52, 101, 138, 153, 180) incl.LOQ Less than 0,600 ng/g fat
+    pcb_sum_patterns = [
+        r"PCB\s+SUM\s+\(PCB\s+28[^\n\r]*?(?:Less\s+than\s+|<\s*)?(\d+[,\.]\d+)\s*ng/g\s+fat",
+        r"PCB\s+SUM\s+\(PCB\s+28[^\n\r]*?(\d+[,\.]\d+)\s*ng/g",
+        r"Sum\s+PCB28[^\n\r]*?(?:Less\s+than\s+|<\s*)?(\d+[,\.]\d+)\s*ng/g"
+    ]
+    
+    for pattern in pcb_sum_patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            value_str = match.group(1).replace(',', '.')
+            try:
+                float(value_str)  # Validate it's a number
+                result['Sum PCB28, PCB52, PCB101, PCB138,PCB153 and PCB180'] = value_str
+                break
+            except ValueError:
+                continue
             
     return result
 
@@ -875,8 +1288,11 @@ def call_openai_structured(raw_text: str, columns: list[str]) -> dict:
         "Preserve all symbols like '<', '>', '≤', '≥' in values. "
         "For GMO tests, use 'positive', 'negative', or actual values. "
         "For microbiology, convert 'less than X cfu/g' to just the number 'X'. "
-        "Convert 'Not detected' values to 'negative'. "
-        "If a parameter is not found, omit it completely."
+        "CRITICAL RULE: Only convert 'Not detected' to 'negative' if the parameter is EXPLICITLY MENTIONED in the document with that result. "
+        "CRITICAL RULE: If a parameter is not found or mentioned anywhere in the document, DO NOT include it in the JSON response at all. "
+        "CRITICAL RULE: Do not add default values, placeholders, or 'negative' for missing parameters. "
+        "CRITICAL RULE: Only return parameters that are explicitly mentioned and tested in the document. "
+        "CRITICAL RULE: Do not return 'Sample #' or 'Batch' fields - the system handles sample/batch ID extraction separately."
     )
 
     # Build enhanced prompt with parameter definitions
@@ -1028,11 +1444,77 @@ def main():
     if isinstance(normalized_ai, dict):
         for k, v in normalized_ai.items():
             if k not in result or result[k] in (None, ""):
-                result[k] = v
+                # CRITICAL FIX: Phospholipid parameters (PC, PE, LPC, PA, PI, P, PL) should ONLY be extracted from Spectral documents
+                phospholipid_params = ['pc', 'pe', 'lpc', 'pa', 'pi', 'p', 'pl']
+                is_phospholipid = k.lower() in phospholipid_params
+                
+                # Skip phospholipid parameters completely for non-Spectral documents
+                if is_phospholipid and not is_spectral:
+                    continue  # Skip this parameter entirely for non-Spectral documents
+                
+                # For other parameters, apply false negative filtering
+                if str(v).lower() == 'negative' and k not in ['Cronobacter spp.']:
+                    # Check if this parameter has explicit negative result evidence (not just mentioned)
+                    param_mentioned = False
+                    explicit_negative = False
+                    search_terms = [k.lower(), k.lower().replace(' ', ''), k.lower().replace(' ', '_')]
+                    
+                    # Add specific search terms and negative patterns for each parameter type
+                    negative_patterns = []
+                    if 'total plate count' in k.lower():
+                        search_terms.extend(['total plate count', 'totalplatecount', 'tpc', 'plate count'])
+                        negative_patterns.extend([r'total\s+plate\s+count[^.]*(?:not\s+detected|negative|nd)', r'tpc[^.]*(?:not\s+detected|negative|nd)'])
+                    elif 'e. coli' in k.lower() or 'e coli' in k.lower():
+                        search_terms.extend(['e. coli', 'e coli', 'ecoli', 'escherichia'])
+                        negative_patterns.extend([r'e\.?\s*coli[^.]*(?:not\s+detected|negative|nd)', r'escherichia[^.]*(?:not\s+detected|negative|nd)'])
+                    elif 'yeasts & molds' in k.lower():
+                        search_terms.extend(['yeasts', 'molds', 'mould', 'yeast', 'fungi'])
+                        negative_patterns.extend([r'yeasts?[^.]*(?:not\s+detected|negative|nd)', r'mou?lds?[^.]*(?:not\s+detected|negative|nd)'])
+                    elif 'total viable count' in k.lower():
+                        search_terms.extend(['viable count', 'viablecount', 'tvc'])
+                        negative_patterns.extend([r'(?:total\s+)?viable\s+count[^.]*(?:not\s+detected|negative|nd)', r'tvc[^.]*(?:not\s+detected|negative|nd)'])
+                    elif 'salmonella' in k.lower():
+                        search_terms.extend(['salmonella'])
+                        negative_patterns.extend([r'salmonella[^.]*(?:not\s+detected|negative|nd)'])
+                    else:
+                        # For other parameters, add specific negative patterns
+                        negative_patterns.extend([rf'{re.escape(k.lower())}[^.]*(?:not\s+detected|negative|nd)', rf'{re.escape(k.lower().replace(" ", ""))}[^.]*(?:not\s+detected|negative|nd)'])
+                        for term in search_terms:
+                            negative_patterns.append(rf'{re.escape(term)}[^.]*(?:not\s+detected|negative|nd)')
+                    
+                    # Check if parameter is mentioned
+                    for term in search_terms:
+                        if term in raw_text.lower():
+                            param_mentioned = True
+                            break
+                    
+                    # Check if there's explicit negative result evidence
+                    for pattern in negative_patterns:
+                        if re.search(pattern, raw_text, flags=re.IGNORECASE):
+                            explicit_negative = True
+                            break
+                    
+                    # Only include 'negative' if there's explicit evidence for microbiology parameters
+                    microbiology_params = ['total plate count', 'e. coli', 'yeasts & molds', 'total viable count', 'salmonella', 'cronobacter']
+                    is_microbiology = any(mb_param in k.lower() for mb_param in microbiology_params)
+                    
+                    if explicit_negative and is_microbiology:
+                        result[k] = v
+                    # else: Skip this likely false negative - don't include it in the result
+                else:
+                    result[k] = v
 
     # Process pesticide review logic (but don't apply to Spectral documents since they focus on phospholipids)
     if not is_spectral:
         result = process_pesticide_review(result, raw_text)
+
+    # Process new column logic for all documents
+    result = process_moh_mosh_moah(result, raw_text)
+    result = process_soy_allergen(result, raw_text)
+    result = process_cronobacter_spp(result, raw_text)
+    result = process_microbiology_values(result, raw_text)
+    result = process_batch_numbers(result, raw_text)
+    result = process_dioxins_data(result, raw_text)
 
     print(json.dumps(result, ensure_ascii=False))
 

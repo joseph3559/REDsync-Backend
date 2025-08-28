@@ -3,9 +3,9 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { z } from "zod";
-import { PrismaClient } from "../../generated/prisma";
-import { authenticate } from "../utils/jwtAuth";
-import { encryptString, decryptString } from "../utils/crypto";
+import { PrismaClient } from "../../generated/prisma/index.js";
+import { authenticate } from "../utils/jwtAuth.js";
+import { encryptString, decryptString } from "../utils/crypto.js";
 
 const prisma = new PrismaClient();
 const router = Router();

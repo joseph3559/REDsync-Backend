@@ -2,8 +2,8 @@ import { Router } from "express";
 import multer from "multer";
 import path from "path";
 import { processImportExportFiles } from "../services/importExportService.js";
-import { PrismaClient } from "../../generated/prisma";
-import { authenticate } from "../utils/jwtAuth";
+import { PrismaClient } from "../../generated/prisma/index.js";
+import { authenticate } from "../utils/jwtAuth.js";
 
 const prisma = new PrismaClient();
 

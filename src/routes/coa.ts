@@ -11,8 +11,8 @@ import {
 } from "../utils/coaColumns.js";
 import { spawn } from "child_process";
 import fs from "fs";
-import { PrismaClient } from "../../generated/prisma";
-import { authenticate } from "../utils/jwtAuth";
+import { PrismaClient } from "../../generated/prisma/index.js";
+import { authenticate } from "../utils/jwtAuth.js";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -46,6 +46,11 @@ function mapExtractedDataToDbFields(extractedData: Record<string, unknown>) {
     'Salmonella (in 250g)': 'salmonella250g',
     'E. coli': 'eColi',
     'Listeria monocytogenes (in 25g)': 'listeria25g',
+    'Coliforms (in 1g)': 'coliforms',
+    'Bacillus cereus': 'bacillusCereus',
+    'MOH (MOSH/MOAH)': 'mohMoshMoah',
+    'Soy Allergen': 'soyAllergen',
+    'Cronobacter spp.': 'cronobacterSpp',
     
     // Phospholipids
     'PC': 'pc',
@@ -62,6 +67,9 @@ function mapExtractedDataToDbFields(extractedData: Record<string, unknown>) {
     'Pesticides': 'pesticides',
     'Heavy Metals': 'heavyMetals',
     'Peanut content': 'peanutContent',
+    'Sum Dioxins (WHO-PCDD/F-TEQ)': 'sumDioxinsWhoPcddTeq',
+    'Sum Dioxins and Dioxin Like PCB\'s (WHOPCDD/F-PCBTEQ)': 'sumDioxinsDlPcbsTeq',
+    'Sum PCB28, PCB52, PCB101, PCB138,PCB153 and PCB180': 'sumPcb28To180',
     
     // GMO
     'PCR, 50 cycl. (GMO), 35S/NOS/FMV': 'gmoTest',
@@ -118,11 +126,11 @@ function normalizeSampleId(sampleId: string | null | undefined): string | null {
 
 // Helper function to extract sample and batch IDs from filename as fallback
 function extractIdsFromFilename(fileName: string): { sampleId: string | null; batchId: string | null } {
-  // Pattern: "BA001734 - M20253004 - Ali.pdf" or similar
-  // Look for patterns like "BA001XXX" for batch and "M20XXXXXX" for sample
+  // Pattern: "BA001734 - M20253004 - Ali.pdf" or "CS30-00-1625 - M20252511.1 - Lab.pdf" or similar
+  // Look for patterns like "BA001XXX" or "CS##-##-####" for batch and "M20XXXXXX" or "M20XXXXXX.X" for sample
   
-  const batchMatch = fileName.match(/\b(BA\d{6})\b/i);
-  const sampleMatch = fileName.match(/\b(M\s*\d{8})\b/i);
+  const batchMatch = fileName.match(/\b((?:BA\d{6})|(?:CS\d{2}-\d{2}-\d{4}))\b/i);
+  const sampleMatch = fileName.match(/\b(M\s*\d{8}(?:\.\d+)?)\b/i);
   
   return {
     batchId: batchMatch ? batchMatch[1] : null,
@@ -353,6 +361,11 @@ router.get("/records", authenticate, async (req, res) => {
         salmonella250g: true,
         eColi: true,
         listeria25g: true,
+        coliforms: true,
+        bacillusCereus: true,
+        mohMoshMoah: true,
+        soyAllergen: true,
+        cronobacterSpp: true,
         pc: true,
         pe: true,
         lpc: true,
@@ -365,6 +378,9 @@ router.get("/records", authenticate, async (req, res) => {
         pesticides: true,
         heavyMetals: true,
         peanutContent: true,
+        sumDioxinsWhoPcddTeq: true,
+        sumDioxinsDlPcbsTeq: true,
+        sumPcb28To180: true,
         gmoTest: true,
         additionalFields: true,
         createdAt: true,
@@ -372,6 +388,14 @@ router.get("/records", authenticate, async (req, res) => {
       }
     });
     
+    // Helper function to format database values (replace null with appropriate placeholder)
+    const formatValue = (value: any): string => {
+      if (value === null || value === undefined || value === 'null') {
+        return '-';
+      }
+      return String(value);
+    };
+
     // Convert database format back to frontend format
     const formattedRecords = records.map(record => {
       const formatted: Record<string, any> = {
@@ -383,44 +407,52 @@ router.get("/records", authenticate, async (req, res) => {
         'Sample #': record.sampleId,
         'Batch': record.batchId,
         // Core parameters
-        'AI': record.ai,
-        'AV': record.av,
-        'POV': record.pov,
-        'Color Gardner (10% dil.)': record.colorGardner10,
-        'Viscosity at 25°C': record.viscosity25,
-        'Hexane Insolubles': record.hexaneInsolubles,
-        'Moisture': record.moisture,
+        'AI': formatValue(record.ai),
+        'AV': formatValue(record.av),
+        'POV': formatValue(record.pov),
+        'Color Gardner (10% dil.)': formatValue(record.colorGardner10),
+        'Viscosity at 25°C': formatValue(record.viscosity25),
+        'Hexane Insolubles': formatValue(record.hexaneInsolubles),
+        'Moisture': formatValue(record.moisture),
         // Heavy metals
-        'Lead': record.lead,
-        'Mercury': record.mercury,
-        'Arsenic': record.arsenic,
-        'Iron (Fe)': record.iron,
+        'Lead': formatValue(record.lead),
+        'Mercury': formatValue(record.mercury),
+        'Arsenic': formatValue(record.arsenic),
+        'Iron (Fe)': formatValue(record.iron),
         // Microbiology
-        'Enterobacteriaceae': record.enterobacteriaceae,
-        'Total Plate Count': record.totalPlateCount,
-        'Yeasts & Molds': record.yeastsMolds,
-        'Yeasts': record.yeasts,
-        'Moulds': record.moulds,
-        'Salmonella (in 25g)': record.salmonella25g,
-        'Salmonella (in 250g)': record.salmonella250g,
-        'E. coli': record.eColi,
-        'Listeria monocytogenes (in 25g)': record.listeria25g,
+        'Enterobacteriaceae': formatValue(record.enterobacteriaceae),
+        'Total Plate Count': formatValue(record.totalPlateCount),
+        'Yeasts & Molds': formatValue(record.yeastsMolds),
+        'Yeasts': formatValue(record.yeasts),
+        'Moulds': formatValue(record.moulds),
+        'Salmonella (in 25g)': formatValue(record.salmonella25g),
+        'Salmonella (in 250g)': formatValue(record.salmonella250g),
+        'E. coli': formatValue(record.eColi),
+        'Listeria monocytogenes (in 25g)': formatValue(record.listeria25g),
+        'Coliforms (in 1g)': formatValue(record.coliforms),
+        'Bacillus cereus': formatValue(record.bacillusCereus),
+        'MOH (MOSH/MOAH)': formatValue(record.mohMoshMoah),
+        'Soy Allergen': formatValue(record.soyAllergen),
+        'Cronobacter spp.': formatValue(record.cronobacterSpp),
         // Phospholipids
-        'PC': record.pc,
-        'PE': record.pe,
-        'LPC': record.lpc,
-        'PA': record.pa,
-        'PI': record.pi,
-        'P': record.p,
-        'PL': record.pl,
+        'PC': formatValue(record.pc),
+        'PE': formatValue(record.pe),
+        'LPC': formatValue(record.lpc),
+        'PA': formatValue(record.pa),
+        'PI': formatValue(record.pi),
+        'P': formatValue(record.p),
+        'PL': formatValue(record.pl),
         // Contaminants
-        'PAH4': record.pah4,
-        'Ochratoxin A': record.ochratoxinA,
-        'Pesticides': record.pesticides,
-        'Heavy Metals': record.heavyMetals,
-        'Peanut content': record.peanutContent,
+        'PAH4': formatValue(record.pah4),
+        'Ochratoxin A': formatValue(record.ochratoxinA),
+        'Pesticides': formatValue(record.pesticides),
+        'Heavy Metals': formatValue(record.heavyMetals),
+        'Peanut content': formatValue(record.peanutContent),
+        'Sum Dioxins (WHO-PCDD/F-TEQ)': formatValue(record.sumDioxinsWhoPcddTeq),
+        'Sum Dioxins and Dioxin Like PCB\'s (WHOPCDD/F-PCBTEQ)': formatValue(record.sumDioxinsDlPcbsTeq),
+        'Sum PCB28, PCB52, PCB101, PCB138,PCB153 and PCB180': formatValue(record.sumPcb28To180),
         // GMO
-        'PCR, 50 cycl. (GMO), 35S/NOS/FMV': record.gmoTest,
+        'PCR, 50 cycl. (GMO), 35S/NOS/FMV': formatValue(record.gmoTest),
         // Additional fields from JSON
         ...(record.additionalFields as Record<string, any> || {})
       };
@@ -816,6 +848,7 @@ function runPythonParser(args: {
     const payload = JSON.stringify({ 
       pdf_path: args.pdfPath, 
       columns: args.columns,
+      openai_api_key: args.openaiApiKey,
       phase: args.phase || 1
     });
     py.stdin.write(payload);

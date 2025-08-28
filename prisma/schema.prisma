@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
   output   = "../generated/prisma"
@@ -14,108 +8,134 @@ datasource db {
   url      = "postgresql://postgres:scott@localhost:5432/redsync"
 }
 
-enum Role {
-  super_admin
-  admin
-  qa_team
+model AISettings {
+  id                  String   @id
+  openAiKey           String
+  model               String
+  confidenceThreshold Float    @default(0.0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime
 }
 
-model User {
-  id        String   @id @default(uuid())
-  name      String?
-  email     String   @unique
-  password  String
-  role      Role     @default(admin)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  coaRecords CoaRecord[]
-  questionnaires Questionnaire[]
-  auditLogs  AuditLog[]
+model AuditLog {
+  id        String   @id
+  userId    String?
+  action    String
+  module    String
+  timestamp DateTime @default(now())
+  User      User?    @relation(fields: [userId], references: [id])
+
+  @@index([module])
+  @@index([timestamp])
+  @@index([userId])
+}
+
+model COASettings {
+  id                   String   @id
+  defaultColumnMapping Json?
+  extractionRules      Json?
+  fileProcessingLimits Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime
+}
+
+model Certification {
+  id        String    @id
+  name      String
+  details   String?
+  validFrom DateTime?
+  validTo   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime
 }
 
 model CoaRecord {
-  id               String   @id @default(uuid())
-  fileName         String   // Original PDF filename
-  sampleId         String?  // Sample # (e.g., M20241803)
-  batchId          String?  // Batch ID (e.g., BA001256)
-  extractionPhase  Int      @default(1)
-  
-  // Core chemical parameters
-  ai               String?  // Acetone Insoluble
-  av               String?  // Acid Value
-  pov              String?  // Peroxide Value
-  colorGardner10   String?  // Color Gardner (10% dil.)
-  viscosity25      String?  // Viscosity at 25°C
-  hexaneInsolubles String?  // Hexane Insolubles
-  moisture         String?  // Moisture
-  
-  // Heavy metals
-  lead             String?  // Lead
-  mercury          String?  // Mercury
-  arsenic          String?  // Arsenic
-  iron             String?  // Iron (Fe)
-  
-  // Microbiology
-  enterobacteriaceae String? // Enterobacteriaceae
-  totalPlateCount    String? // Total Plate Count
-  yeastsMolds        String? // Yeasts & Molds
-  yeasts             String? // Yeasts
-  moulds             String? // Moulds
-  salmonella25g      String? // Salmonella (in 25g)
-  salmonella250g     String? // Salmonella (in 250g)
-  eColi              String? // E. coli
-  listeria25g        String? // Listeria monocytogenes (in 25g)
-  
-  // Phospholipids (PL)
-  pc               String?  // Phosphatidylcholine
-  pe               String?  // Phosphatidylethanolamine
-  lpc              String?  // Lysophosphatidylcholine
-  pa               String?  // Phosphatidic Acid
-  pi               String?  // Phosphatidylinositol
-  p                String?  // Phosphorus
-  pl               String?  // Phospholipids
-  
-  // Contaminants
-  pah4             String?  // PAH4
-  ochratoxinA      String?  // Ochratoxin A
-  pesticides       String?  // Pesticides
-  heavyMetals      String?  // Heavy Metals
-  peanutContent    String?  // Peanut content
-  
-  // GMO
-  gmoTest          String?  // PCR, 50 cycl. (GMO), 35S/NOS/FMV
-  
-  // Other chemical parameters
-  colorGardnerAsIs String?  // Color Gardner (As is)
-  colorIodine      String?  // Color Iodine
-  tolueneInsolubles String? // Toluene Insolubles
-  specificGravity  String?  // Specific gravity
-  ffaAtLoading     String?  // FFA (%Oleic) at loading
-  iodineValue      String?  // Iodine value
-  soapContent      String?  // Soap content
-  insolubleMatter  String?  // Insoluble matters
-  moistureInsolubles String? // Moisture and insolubles
-  
-  // Store any additional extracted fields as JSON
-  additionalFields Json?
-  
-  // Metadata
-  userId           String
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  
-  @@index([userId])
-  @@index([sampleId])
+  id                   String   @id
+  fileName             String
+  sampleId             String?
+  batchId              String?
+  extractionPhase      Int      @default(1)
+  ai                   String?
+  av                   String?
+  pov                  String?
+  colorGardner10       String?
+  viscosity25          String?
+  hexaneInsolubles     String?
+  moisture             String?
+  lead                 String?
+  mercury              String?
+  arsenic              String?
+  iron                 String?
+  enterobacteriaceae   String?
+  totalPlateCount      String?
+  yeastsMolds          String?
+  yeasts               String?
+  moulds               String?
+  salmonella25g        String?
+  salmonella250g       String?
+  eColi                String?
+  listeria25g          String?
+  pc                   String?
+  pe                   String?
+  lpc                  String?
+  pa                   String?
+  pi                   String?
+  p                    String?
+  pl                   String?
+  pah4                 String?
+  ochratoxinA          String?
+  pesticides           String?
+  heavyMetals          String?
+  peanutContent        String?
+  gmoTest              String?
+  colorGardnerAsIs     String?
+  colorIodine          String?
+  tolueneInsolubles    String?
+  specificGravity      String?
+  ffaAtLoading         String?
+  iodineValue          String?
+  soapContent          String?
+  insolubleMatter      String?
+  moistureInsolubles   String?
+  additionalFields     Json?
+  userId               String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime
+  bacillusCereus       String?
+  coliforms            String?
+  mohMoshMoah          String?
+  soyAllergen          String?
+  cronobacterSpp       String?
+  sumDioxinsDlPcbsTeq  String?
+  sumDioxinsWhoPcddTeq String?
+  sumPcb28To180        String?
+  User                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([batchId])
   @@index([createdAt])
+  @@index([sampleId])
+  @@index([userId])
+}
+
+model CompanyInfo {
+  id            String   @id
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime
+  address       String?
+  city          String?
+  companyName   String?
+  contactPerson String?
+  country       String?
+  email         String?
+  logoPath      String?
+  phone         String?
+  postalCode    String?
 }
 
 model ImportExportRecord {
-  id               String   @id @default(uuid())
+  id               String   @id
   sourceFile       String
-  company          String?  // Changed from country - stores exporter name for exports, supplier name for imports
-  flow             String   // "import" or "export"
+  flow             String
   hsCode           String?
   productName      String?
   importerExporter String?
@@ -130,136 +150,88 @@ model ImportExportRecord {
   metadata         Json?
   userId           String?
   createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  updatedAt        DateTime
+  company          String?
 
-  @@index([flow])
-  @@index([hsCode])
   @@index([company])
   @@index([createdAt])
+  @@index([flow])
+  @@index([hsCode])
 }
 
-// Company information for branding and contact details
-model CompanyInfo {
-  id            String   @id @default(uuid())
-  companyName   String?
-  address       String?
-  postalCode    String?
-  city          String?
-  country       String?
-  contactPerson String?
-  email         String?
-  phone         String?
-  logoPath      String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-}
-
-// COA processing settings
-model COASettings {
-  id                   String   @id @default(uuid())
-  defaultColumnMapping Json?
-  extractionRules      Json?
-  fileProcessingLimits Json?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-}
-
-// Import/Export analysis settings
 model ImportExportSettings {
-  id                  String   @id @default(uuid())
+  id                  String   @id
   hsCodes             String[]
   competitorMapping   Json?
   currencyPreferences Json?
   filterPresets       Json?
   createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  updatedAt           DateTime
 }
 
-// Questionnaire automation settings
+model Questionnaire {
+  id                  String                @id
+  originalFile        String
+  processedFile       String?
+  status              String                @default("uploaded")
+  metadata            Json?
+  userId              String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime
+  User                User?                 @relation(fields: [userId], references: [id])
+  QuestionnaireAnswer QuestionnaireAnswer[]
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+model QuestionnaireAnswer {
+  id              String        @id
+  questionnaireId String
+  question        String
+  answer          String?
+  source          String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime
+  Questionnaire   Questionnaire @relation(fields: [questionnaireId], references: [id], onDelete: Cascade)
+
+  @@index([questionnaireId])
+}
+
 model QuestionnaireSettings {
-  id                String   @id @default(uuid())
+  id                String   @id
   predefinedAnswers Json?
   skipLogicRules    Json?
   certifications    String[]
   createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  updatedAt         DateTime
 }
 
-// AI API settings
-model AISettings {
-  id                   String   @id @default(uuid())
-  openAiKey            String
-  model                String
-  confidenceThreshold  Float    @default(0.0)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-}
-
-// System preferences
 model SystemPreferences {
-  id                  String   @id @default(uuid())
+  id                  String   @id
   dateFormat          String
   language            String
   defaultExportFormat String
   backupConfig        Json?
   createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  updatedAt           DateTime
 }
 
-// Audit logs for tracking changes
-model AuditLog {
-  id        String   @id @default(uuid())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  action    String
-  module    String
-  timestamp DateTime @default(now())
-
-  @@index([userId])
-  @@index([module])
-  @@index([timestamp])
+model User {
+  id            String          @id
+  email         String          @unique
+  password      String
+  role          Role            @default(admin)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime
+  name          String?
+  AuditLog      AuditLog[]
+  CoaRecord     CoaRecord[]
+  Questionnaire Questionnaire[]
 }
 
-// Stores certifications and their details for skip logic
-model Certification {
-  id        String   @id @default(uuid())
-  name      String
-  details   String?
-  validFrom DateTime?
-  validTo   DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-// Stores metadata for each uploaded and processed questionnaire
-model Questionnaire {
-  id            String   @id @default(uuid())
-  originalFile  String
-  processedFile String?
-  status        String   @default("uploaded") // uploaded | processing | processed | failed | draft
-  metadata      Json?
-  userId        String?
-  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  answers QuestionnaireAnswer[]
-
-  @@index([status])
-  @@index([createdAt])
-}
-
-// Stores history of generated answers for re-use
-model QuestionnaireAnswer {
-  id              String        @id @default(uuid())
-  questionnaireId String
-  question        String
-  answer          String?
-  source          String        // company_info | certification | ai | skip
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-
-  questionnaire Questionnaire @relation(fields: [questionnaireId], references: [id], onDelete: Cascade)
-
-  @@index([questionnaireId])
+enum Role {
+  super_admin
+  admin
+  qa_team
 }

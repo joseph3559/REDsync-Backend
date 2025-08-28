@@ -1,9 +1,9 @@
 import path from "path";
 import fs from "fs";
-import { PrismaClient } from "../../generated/prisma";
+import { PrismaClient } from "../../generated/prisma/index.js";
 import { PDFDocument, rgb } from "pdf-lib";
 import * as XLSX from "xlsx";
-import { generateAnswerForQuestion } from "./questionnaireAi";
+import { generateAnswerForQuestion } from "./questionnaireAi.js";
 
 const prisma = new PrismaClient();
 
