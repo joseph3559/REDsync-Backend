@@ -1,0 +1,100 @@
+name: Deploy to Development
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Generate Prisma Client
+        run: npm run prisma:generate
+        
+      - name: Build application
+        run: npm run build
+        
+      - name: Deploy to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.DEV_JWT_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PORT: 4001
+        run: |
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H $VPS_HOST >> ~/.ssh/known_hosts
+          
+          # Create deployment package
+          tar -czf deployment.tar.gz \
+            --exclude=node_modules \
+            dist/ \
+            generated/ \
+            package.json \
+            package-lock.json \
+            prisma/ \
+            assets/
+          
+          # Copy files to VPS
+          scp -i ~/.ssh/deploy_key deployment.tar.gz $VPS_USER@$VPS_HOST:/var/www/redsync/dev/
+          
+          # Deploy on VPS
+          ssh -i ~/.ssh/deploy_key $VPS_USER@$VPS_HOST "cd /var/www/redsync/dev && \
+            tar -xzf deployment.tar.gz && \
+            rm deployment.tar.gz && \
+            npm ci --only=production && \
+            echo \"DATABASE_URL=$DATABASE_URL\" > .env && \
+            echo \"JWT_SECRET=$JWT_SECRET\" >> .env && \
+            echo \"OPENAI_API_KEY=$OPENAI_API_KEY\" >> .env && \
+            echo \"PORT=$PORT\" >> .env && \
+            echo \"NODE_ENV=development\" >> .env && \
+            mkdir -p uploads/coa uploads/import-export uploads/questionnaires uploads/settings/logos uploads/settings/certifications && \
+            mkdir -p processed/questionnaires && \
+            (pm2 delete redsync-dev || true) && \
+            pm2 start dist/server.js --name redsync-dev --time && \
+            pm2 save && \
+            echo 'Development deployment completed successfully!'"
+          
+      - name: Health Check
+        run: |
+          sleep 5
+          # 401 is expected for unauthenticated requests - means API is running
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://dev.redlecithin.online/api/test)
+          if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ API is responding (HTTP $HTTP_CODE)"
+          else
+            echo "❌ API health check failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "✅ Development deployment successful!"
+          else
+            echo "❌ Development deployment failed!"
+            exit 1
+          fi
+
