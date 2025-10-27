@@ -66,40 +66,22 @@ jobs:
           scp -i ~/.ssh/deploy_key deployment.tar.gz $VPS_USER@$VPS_HOST:/var/www/redsync/prod/
           
           # Deploy on VPS
-          ssh -i ~/.ssh/deploy_key $VPS_USER@$VPS_HOST << 'ENDSSH'
-            set -e
-            cd /var/www/redsync/prod
-            
-            # Extract deployment package
-            tar -xzf deployment.tar.gz
-            rm deployment.tar.gz
-            
-            # Install production dependencies
-            npm ci --only=production
-            
-            # Create .env file
-            cat > .env << EOF
-          DATABASE_URL=$DATABASE_URL
-          JWT_SECRET=$JWT_SECRET
-          OPENAI_API_KEY=$OPENAI_API_KEY
-          PORT=$PORT
-          NODE_ENV=production
-          EOF
-            
-            # Run database migrations
-            npx prisma migrate deploy
-            
-            # Create necessary directories
-            mkdir -p uploads/coa uploads/import-export uploads/questionnaires uploads/settings/logos uploads/settings/certifications
-            mkdir -p processed/questionnaires
-            
-            # Restart application with PM2
-            pm2 delete redsync-prod || true
-            pm2 start dist/server.js --name redsync-prod --time
-            pm2 save
-            
-            echo "Production deployment completed successfully!"
-          ENDSSH
+          ssh -i ~/.ssh/deploy_key $VPS_USER@$VPS_HOST "cd /var/www/redsync/prod && \
+            tar -xzf deployment.tar.gz && \
+            rm deployment.tar.gz && \
+            npm ci --only=production && \
+            echo \"DATABASE_URL=$DATABASE_URL\" > .env && \
+            echo \"JWT_SECRET=$JWT_SECRET\" >> .env && \
+            echo \"OPENAI_API_KEY=$OPENAI_API_KEY\" >> .env && \
+            echo \"PORT=$PORT\" >> .env && \
+            echo \"NODE_ENV=production\" >> .env && \
+            npx prisma migrate deploy && \
+            mkdir -p uploads/coa uploads/import-export uploads/questionnaires uploads/settings/logos uploads/settings/certifications && \
+            mkdir -p processed/questionnaires && \
+            (pm2 delete redsync-prod || true) && \
+            pm2 start dist/server.js --name redsync-prod --time && \
+            pm2 save && \
+            echo 'Production deployment completed successfully!'"
           
       - name: Health Check
         run: |
