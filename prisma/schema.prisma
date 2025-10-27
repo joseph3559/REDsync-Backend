@@ -9,16 +9,16 @@ datasource db {
 }
 
 model AISettings {
-  id                  String   @id
+  id                  String   @id @default(uuid())
   openAiKey           String
   model               String
   confidenceThreshold Float    @default(0.0)
   createdAt           DateTime @default(now())
-  updatedAt           DateTime
+  updatedAt           DateTime @updatedAt
 }
 
 model AuditLog {
-  id        String   @id
+  id        String   @id @default(uuid())
   userId    String?
   action    String
   module    String
@@ -31,26 +31,26 @@ model AuditLog {
 }
 
 model COASettings {
-  id                   String   @id
+  id                   String   @id @default(uuid())
   defaultColumnMapping Json?
   extractionRules      Json?
   fileProcessingLimits Json?
   createdAt            DateTime @default(now())
-  updatedAt            DateTime
+  updatedAt            DateTime @updatedAt
 }
 
 model Certification {
-  id        String    @id
+  id        String    @id @default(uuid())
   name      String
   details   String?
   validFrom DateTime?
   validTo   DateTime?
   createdAt DateTime  @default(now())
-  updatedAt DateTime
+  updatedAt DateTime  @updatedAt
 }
 
 model CoaRecord {
-  id                   String   @id
+  id                   String   @id @default(uuid())
   fileName             String
   sampleId             String?
   batchId              String?
@@ -100,7 +100,7 @@ model CoaRecord {
   additionalFields     Json?
   userId               String
   createdAt            DateTime @default(now())
-  updatedAt            DateTime
+  updatedAt            DateTime @updatedAt
   bacillusCereus       String?
   coliforms            String?
   mohMoshMoah          String?
@@ -118,9 +118,9 @@ model CoaRecord {
 }
 
 model CompanyInfo {
-  id            String   @id
+  id            String   @id @default(uuid())
   createdAt     DateTime @default(now())
-  updatedAt     DateTime
+  updatedAt     DateTime @updatedAt
   address       String?
   city          String?
   companyName   String?
@@ -133,7 +133,7 @@ model CompanyInfo {
 }
 
 model ImportExportRecord {
-  id               String   @id
+  id               String   @id @default(uuid())
   sourceFile       String
   flow             String
   hsCode           String?
@@ -150,7 +150,7 @@ model ImportExportRecord {
   metadata         Json?
   userId           String?
   createdAt        DateTime @default(now())
-  updatedAt        DateTime
+  updatedAt        DateTime @updatedAt
   company          String?
 
   @@index([company])
@@ -160,24 +160,24 @@ model ImportExportRecord {
 }
 
 model ImportExportSettings {
-  id                  String   @id
+  id                  String   @id @default(uuid())
   hsCodes             String[]
   competitorMapping   Json?
   currencyPreferences Json?
   filterPresets       Json?
   createdAt           DateTime @default(now())
-  updatedAt           DateTime
+  updatedAt           DateTime @updatedAt
 }
 
 model Questionnaire {
-  id                  String                @id
+  id                  String                @id @default(uuid())
   originalFile        String
   processedFile       String?
   status              String                @default("uploaded")
   metadata            Json?
   userId              String?
   createdAt           DateTime              @default(now())
-  updatedAt           DateTime
+  updatedAt           DateTime              @updatedAt
   User                User?                 @relation(fields: [userId], references: [id])
   QuestionnaireAnswer QuestionnaireAnswer[]
 
@@ -186,44 +186,45 @@ model Questionnaire {
 }
 
 model QuestionnaireAnswer {
-  id              String        @id
+  id              String        @id @default(uuid())
   questionnaireId String
   question        String
   answer          String?
   source          String
   createdAt       DateTime      @default(now())
-  updatedAt       DateTime
+  updatedAt       DateTime      @updatedAt
   Questionnaire   Questionnaire @relation(fields: [questionnaireId], references: [id], onDelete: Cascade)
 
   @@index([questionnaireId])
 }
 
 model QuestionnaireSettings {
-  id                String   @id
+  id                String   @id @default(uuid())
   predefinedAnswers Json?
   skipLogicRules    Json?
   certifications    String[]
   createdAt         DateTime @default(now())
-  updatedAt         DateTime
+  updatedAt         DateTime @updatedAt
 }
 
 model SystemPreferences {
-  id                  String   @id
+  id                  String   @id @default(uuid())
   dateFormat          String
   language            String
   defaultExportFormat String
   backupConfig        Json?
   createdAt           DateTime @default(now())
-  updatedAt           DateTime
+  updatedAt           DateTime @updatedAt
 }
 
 model User {
-  id            String          @id
+  id            String          @id @default(uuid())
   email         String          @unique
   password      String
   role          Role            @default(admin)
+  status        UserStatus      @default(pending)
   createdAt     DateTime        @default(now())
-  updatedAt     DateTime
+  updatedAt     DateTime        @updatedAt
   name          String?
   AuditLog      AuditLog[]
   CoaRecord     CoaRecord[]
@@ -234,4 +235,10 @@ enum Role {
   super_admin
   admin
   qa_team
+}
+
+enum UserStatus {
+  pending
+  approved
+  rejected
 }

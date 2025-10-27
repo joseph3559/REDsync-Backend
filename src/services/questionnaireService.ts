@@ -123,7 +123,7 @@ export async function processQuestionnaire(questionnaireId: string, parsedQuesti
 }
 
 export async function getQuestionnaireById(id: string) {
-  const q = await prisma.questionnaire.findUnique({ where: { id }, include: { answers: true } });
+  const q = await prisma.questionnaire.findUnique({ where: { id }, include: { QuestionnaireAnswer: true } });
   if (!q) return null;
   return q;
 }
@@ -162,9 +162,9 @@ export async function getQuestionnaires(userId: string, status: string = "all", 
   const questionnaires = await prisma.questionnaire.findMany({
     where,
     include: {
-      answers: true,
+      QuestionnaireAnswer: true,
       _count: {
-        select: { answers: true }
+        select: { QuestionnaireAnswer: true }
       }
     },
     orderBy: { createdAt: "desc" },
@@ -179,9 +179,9 @@ export async function getQuestionnaires(userId: string, status: string = "all", 
       draft: questionnaires.filter(q => q.status === "draft").length,
       processing: questionnaires.filter(q => q.status === "processing").length,
       failed: questionnaires.filter(q => q.status === "failed").length,
-      totalAnswers: questionnaires.reduce((sum, q) => sum + q.answers.length, 0),
-      totalFromDatabase: questionnaires.reduce((sum, q) => sum + q.answers.filter(a => a.source === "company_info").length, 0),
-      totalFromAI: questionnaires.reduce((sum, q) => sum + q.answers.filter(a => a.source === "ai").length, 0)
+      totalAnswers: questionnaires.reduce((sum, q) => sum + q.QuestionnaireAnswer.length, 0),
+      totalFromDatabase: questionnaires.reduce((sum, q) => sum + q.QuestionnaireAnswer.filter((a: any) => a.source === "company_info").length, 0),
+      totalFromAI: questionnaires.reduce((sum, q) => sum + q.QuestionnaireAnswer.filter((a: any) => a.source === "ai").length, 0)
     }
   };
 }

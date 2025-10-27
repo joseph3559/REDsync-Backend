@@ -107,7 +107,7 @@ export async function processQuestionnaire(questionnaireId, parsedQuestions, use
     return { questionnaireId, processedFile: processedPath, answersCount: answersToSave.length };
 }
 export async function getQuestionnaireById(id) {
-    const q = await prisma.questionnaire.findUnique({ where: { id }, include: { answers: true } });
+    const q = await prisma.questionnaire.findUnique({ where: { id }, include: { QuestionnaireAnswer: true } });
     if (!q)
         return null;
     return q;
@@ -143,9 +143,9 @@ export async function getQuestionnaires(userId, status = "all", limit = 20) {
     const questionnaires = await prisma.questionnaire.findMany({
         where,
         include: {
-            answers: true,
+            QuestionnaireAnswer: true,
             _count: {
-                select: { answers: true }
+                select: { QuestionnaireAnswer: true }
             }
         },
         orderBy: { createdAt: "desc" },
@@ -159,9 +159,9 @@ export async function getQuestionnaires(userId, status = "all", limit = 20) {
             draft: questionnaires.filter(q => q.status === "draft").length,
             processing: questionnaires.filter(q => q.status === "processing").length,
             failed: questionnaires.filter(q => q.status === "failed").length,
-            totalAnswers: questionnaires.reduce((sum, q) => sum + q.answers.length, 0),
-            totalFromDatabase: questionnaires.reduce((sum, q) => sum + q.answers.filter(a => a.source === "company_info").length, 0),
-            totalFromAI: questionnaires.reduce((sum, q) => sum + q.answers.filter(a => a.source === "ai").length, 0)
+            totalAnswers: questionnaires.reduce((sum, q) => sum + q.QuestionnaireAnswer.length, 0),
+            totalFromDatabase: questionnaires.reduce((sum, q) => sum + q.QuestionnaireAnswer.filter((a) => a.source === "company_info").length, 0),
+            totalFromAI: questionnaires.reduce((sum, q) => sum + q.QuestionnaireAnswer.filter((a) => a.source === "ai").length, 0)
         }
     };
 }
