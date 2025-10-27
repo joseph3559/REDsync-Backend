@@ -240,27 +240,104 @@ router.post(
 
 // 6. API & AI Settings
 const aiSettingsSchema = z.object({
-  openAiKey: z.string().min(1).optional(),
+  apiKeys: z.record(z.string()).optional(), // { openai: "sk-...", gemini: "...", etc. }
   model: z.string().min(1),
   confidenceThreshold: z.coerce.number().min(0).max(1),
 });
+
 router.get("/ai", authenticate, async (req, res) => {
-  const cfg = await prisma.aISettings.findFirst();
-  if (!cfg) return res.json({ data: null });
-  const masked = cfg.openAiKey ? "********" : null;
-  return res.json({ data: { id: cfg.id, openAiKey: masked, model: cfg.model, confidenceThreshold: cfg.confidenceThreshold } });
+  const cfg = await prisma.aISettings.findFirst({ orderBy: { updatedAt: "desc" } });
+  if (!cfg) return res.json({ data: { apiKeys: {}, model: "gpt-4o-mini", confidenceThreshold: 0.5 } });
+  
+  // Return masked API keys (show only if configured, not the actual values)
+  const maskedApiKeys: Record<string, string> = {};
+  if (cfg.apiKeys && typeof cfg.apiKeys === "object") {
+    const apiKeys = cfg.apiKeys as Record<string, string>;
+    for (const provider in apiKeys) {
+      if (apiKeys[provider]) {
+        maskedApiKeys[provider] = "********";
+      }
+    }
+  }
+  
+  return res.json({ 
+    data: { 
+      id: cfg.id, 
+      apiKeys: maskedApiKeys, 
+      model: cfg.model, 
+      confidenceThreshold: cfg.confidenceThreshold 
+    } 
+  });
 });
+
 router.post("/ai", authenticate, async (req, res) => {
   try {
     const body = aiSettingsSchema.parse(req.body);
-    const existing = await prisma.aISettings.findFirst();
-    const toSave: any = { model: body.model, confidenceThreshold: body.confidenceThreshold };
-    if (body.openAiKey) toSave.openAiKey = encryptString(body.openAiKey);
+    const existing = await prisma.aISettings.findFirst({ orderBy: { updatedAt: "desc" } });
+    
+    // Prepare data to save
+    const toSave: any = { 
+      model: body.model, 
+      confidenceThreshold: body.confidenceThreshold 
+    };
+    
+    // Handle API keys - encrypt them before storing
+    if (body.apiKeys && Object.keys(body.apiKeys).length > 0) {
+      const encryptedKeys: Record<string, string> = {};
+      
+      // Get existing keys to preserve those not being updated
+      let existingKeys: Record<string, string> = {};
+      if (existing && existing.apiKeys && typeof existing.apiKeys === "object") {
+        existingKeys = existing.apiKeys as Record<string, string>;
+      }
+      
+      // Merge existing keys with new ones
+      for (const provider in body.apiKeys) {
+        const key = body.apiKeys[provider];
+        if (key && key !== "********") {
+          // Only update if it's not the masked value
+          encryptedKeys[provider] = encryptString(key);
+        } else if (existingKeys[provider]) {
+          // Keep existing encrypted key
+          encryptedKeys[provider] = existingKeys[provider];
+        }
+      }
+      
+      toSave.apiKeys = encryptedKeys;
+    } else if (existing && existing.apiKeys) {
+      // If no new keys provided, keep existing ones
+      toSave.apiKeys = existing.apiKeys;
+    }
+    
     const saved = existing
       ? await prisma.aISettings.update({ where: { id: existing.id }, data: toSave })
       : await prisma.aISettings.create({ data: toSave });
+    
     await logAudit((req as any).userId, "update_ai_settings", "settings");
-    return res.json({ data: { id: saved.id, openAiKey: saved.openAiKey ? "********" : null, model: saved.model, confidenceThreshold: saved.confidenceThreshold } });
+    
+    // Clear the API keys cache so changes take effect immediately
+    const { clearApiKeysCache } = await import("../utils/apiKeys.js");
+    clearApiKeysCache();
+    
+    // Return masked keys
+    const maskedApiKeys: Record<string, string> = {};
+    if (saved.apiKeys && typeof saved.apiKeys === "object") {
+      const apiKeys = saved.apiKeys as Record<string, string>;
+      for (const provider in apiKeys) {
+        if (apiKeys[provider]) {
+          maskedApiKeys[provider] = "********";
+        }
+      }
+    }
+    
+    return res.json({ 
+      data: { 
+        id: saved.id, 
+        apiKeys: maskedApiKeys, 
+        model: saved.model, 
+        confidenceThreshold: saved.confidenceThreshold 
+      } 
+    });
   } catch (e: any) {
     return res.status(400).json({ message: e.message });
   }

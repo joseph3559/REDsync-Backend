@@ -286,6 +286,10 @@ router.post("/upload", authenticate, upload.array("files"), async (req, res) => 
   try {
     const phase = req.body.phase || "1"; // Default to Phase 1
     const columns = phase === "2" ? await getPhase2CoaColumns() : await getPhase1CoaColumns();
+    // Get OpenAI API key from database or environment
+    const { getOpenAIApiKey } = await import("../utils/apiKeys.js");
+    const openaiApiKey = await getOpenAIApiKey() || "";
+
     const results: Array<Record<string, unknown>> = [];
     const savedRecords: Array<any> = [];
 
@@ -294,7 +298,7 @@ router.post("/upload", authenticate, upload.array("files"), async (req, res) => 
         const parsed = await runPythonParser({
           pdfPath: file.path,
           columns,
-          openaiApiKey: process.env.OPENAI_API_KEY || "",
+          openaiApiKey,
           phase: parseInt(phase),
         });
         
