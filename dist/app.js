@@ -77,7 +77,7 @@ app.post("/api/auth/login", async (req, res) => {
     const ok = await bcrypt.compare(password, user.password);
     if (!ok)
         return res.status(401).json({ message: "Invalid credentials" });
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
     return res.json({ token });
 });
 // Get pending users (Super admin only)
