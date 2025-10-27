@@ -110,6 +110,9 @@ export const HEADER_CONFIG = [
     { name: 'Salmonella (in 250g)', laboratory: 'Nofalab or TLR', type: 'Microbiology', phase: 1, ignore: false },
     { name: 'Hydrolysis Degree (LPC/(LPC+PC) in mol%)', laboratory: 'Spectral Service', type: 'PL', phase: 1, ignore: false },
     { name: 'Bacillus cereus', laboratory: 'Nofalab or TLR', type: 'Microbiology', phase: 1, ignore: false },
+    { name: 'MOH (MOSH/MOAH)', laboratory: 'Nofalab or TLR', type: 'Contaminant', phase: 1, ignore: false },
+    { name: 'Soy Allergen', laboratory: 'IFP', type: 'Contaminant', phase: 1, ignore: false },
+    { name: 'Cronobacter spp.', laboratory: 'Nofalab or TLR', type: 'Microbiology', phase: 1, ignore: false },
 ];
 // Enhance columns with definitions
 HEADER_CONFIG.forEach(col => {

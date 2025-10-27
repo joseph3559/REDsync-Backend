@@ -33,30 +33,41 @@ export async function getPhase1ColumnsWithConfig() {
     return getPhase1Columns();
 }
 // Function that reads exact headers from Excel file including blank columns
+// Falls back to predefined headers if Excel file is not available
 export async function getCoaColumnsFromExcel() {
     const excelPath = path.resolve("/home/scott/Desktop/Office/red/docs/coa database files/COA Database.xlsm");
-    if (!fs.existsSync(excelPath)) {
-        throw new Error(`COA reference file not found at ${excelPath}`);
+    // Try to read from Excel file first
+    if (fs.existsSync(excelPath)) {
+        try {
+            const wb = xlsx.readFile(excelPath, { bookVBA: true });
+            // Choose the sheet that likely contains the database (prefer a sheet named 'Database' or similar)
+            const preferredSheet = wb.SheetNames.find((n) => /database|coa/i.test(n)) || wb.SheetNames[0];
+            const ws = wb.Sheets[preferredSheet];
+            const ref = ws["!ref"];
+            if (!ref)
+                throw new Error("Worksheet has no range");
+            const range = xlsx.utils.decode_range(ref);
+            // Headers are in row 3 (index 2) based on the Excel file structure
+            const headerRowIndex = range.s.r + 2;
+            // Read ALL columns from the header row, including blank ones
+            const headers = [];
+            for (let c = range.s.c; c <= range.e.c; c++) {
+                const addr = xlsx.utils.encode_cell({ r: headerRowIndex, c });
+                const cell = ws[addr];
+                // Preserve exact header including empty strings for blank columns
+                const header = cell?.v !== undefined ? String(cell.v) : "";
+                headers.push(header);
+            }
+            // Do NOT de-duplicate or filter - preserve exact structure including blanks
+            return headers;
+        }
+        catch (error) {
+            console.warn(`Failed to read Excel file at ${excelPath}, falling back to predefined headers:`, error);
+        }
     }
-    const wb = xlsx.readFile(excelPath, { bookVBA: true });
-    // Choose the sheet that likely contains the database (prefer a sheet named 'Database' or similar)
-    const preferredSheet = wb.SheetNames.find((n) => /database|coa/i.test(n)) || wb.SheetNames[0];
-    const ws = wb.Sheets[preferredSheet];
-    const ref = ws["!ref"];
-    if (!ref)
-        throw new Error("Worksheet has no range");
-    const range = xlsx.utils.decode_range(ref);
-    // Headers are in row 3 (index 2) based on the Excel file structure
-    const headerRowIndex = range.s.r + 2;
-    // Read ALL columns from the header row, including blank ones
-    const headers = [];
-    for (let c = range.s.c; c <= range.e.c; c++) {
-        const addr = xlsx.utils.encode_cell({ r: headerRowIndex, c });
-        const cell = ws[addr];
-        // Preserve exact header including empty strings for blank columns
-        const header = cell?.v !== undefined ? String(cell.v) : "";
-        headers.push(header);
+    else {
+        console.warn(`COA reference file not found at ${excelPath}, using predefined headers`);
     }
-    // Do NOT de-duplicate or filter - preserve exact structure including blanks
-    return headers;
+    // Fallback to predefined headers from headerConfig
+    return getPhase1Columns().map(col => col.name);
 }

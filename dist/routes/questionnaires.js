@@ -2,8 +2,8 @@ import { Router } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { processUploadedFiles, processQuestionnaire, getQuestionnaireById, saveDraft, getQuestionnaires, deleteQuestionnaire } from "../services/questionnaireService";
-import { authenticate } from "../utils/jwtAuth";
+import { processUploadedFiles, processQuestionnaire, getQuestionnaireById, saveDraft, getQuestionnaires, deleteQuestionnaire } from "../services/questionnaireService.js";
+import { authenticate } from "../utils/jwtAuth.js";
 const router = Router();
 const uploadDir = path.join(process.cwd(), "uploads", "questionnaires");
 if (!fs.existsSync(uploadDir)) {

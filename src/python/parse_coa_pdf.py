@@ -29,6 +29,75 @@ def extract_text_from_pdf(path: str) -> str:
         return ""
 
 
+def extract_text_with_ocr(path: str) -> str:
+    """Extract text from scanned PDF using OCR."""
+    try:
+        import fitz  # PyMuPDF
+        import pytesseract
+        from PIL import Image, ImageEnhance, ImageFilter
+        import io
+        
+        print(f"Attempting OCR extraction for scanned PDF: {path}", file=sys.stderr)
+        
+        doc = fitz.open(path)
+        text_parts = []
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            
+            # Convert page to image with higher resolution for better OCR
+            pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))  # 3x zoom for better quality
+            img_data = pix.tobytes("png")
+            
+            # Convert to PIL Image and enhance for better OCR
+            image = Image.open(io.BytesIO(img_data))
+            
+            # Enhance image quality for better OCR
+            image = image.convert('L')  # Convert to grayscale
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(2.0)  # Increase contrast
+            image = image.filter(ImageFilter.SHARPEN)  # Sharpen image
+            
+            # Try multiple OCR configurations
+            ocr_configs = [
+                '--psm 6',  # Uniform block of text
+                '--psm 4',  # Single column of text
+                '--psm 11', # Sparse text
+                '--psm 12', # Sparse text with OSD
+            ]
+            
+            best_text = ""
+            best_length = 0
+            
+            for config in ocr_configs:
+                try:
+                    page_text = pytesseract.image_to_string(image, config=config)
+                    if len(page_text) > best_length:
+                        best_text = page_text
+                        best_length = len(page_text)
+                except Exception:
+                    continue
+            
+            if best_text:
+                text_parts.append(best_text)
+                print(f"OCR extracted {len(best_text)} characters from page {page_num + 1}", file=sys.stderr)
+            else:
+                print(f"OCR failed for page {page_num + 1}", file=sys.stderr)
+        
+        doc.close()
+        full_text = "\n".join(text_parts)
+        print(f"OCR extraction completed: {len(full_text)} total characters", file=sys.stderr)
+        return full_text
+        
+    except ImportError as e:
+        print(f"OCR dependencies not available: {e}", file=sys.stderr)
+        print("To enable OCR, install: pip install PyMuPDF pytesseract pillow", file=sys.stderr)
+        return ""
+    except Exception as e:
+        print(f"OCR extraction failed: {e}", file=sys.stderr)
+        return ""
+
+
 def extract_spectral_table_data(path: str) -> dict:
     """Extract structured table data specifically for Spectral Service AG documents."""
     try:
@@ -388,8 +457,15 @@ def clean_coa_value(value: str, parameter_name: str = "") -> str:
     original_value = value
     parameter_lower = parameter_name.lower() if parameter_name else ""
     
+    # First, handle spaced-out characters (e.g., "d e t e c t e d" -> "detected")
+    # Strategy: remove spaces from sequences where each "word" is a single character
+    normalized_value = value
+    # Match sequences of single chars separated by spaces: "a b c d" -> "abcd"
+    normalized_value = re.sub(r'\b(\w)(\s+\w)+\b', lambda m: m.group(0).replace(' ', ''), normalized_value)
+    
     # Handle "Not detected" cases - convert to "negative"
-    if re.search(r"(?i)\b(not\s+detected|nd)\b", value):
+    # Use normalized value for pattern matching
+    if re.search(r"(?i)\b(not\s*detected|nd)\b", normalized_value):
         return "negative"
     
     # Handle "Less than" cases
@@ -467,7 +543,7 @@ def clean_coa_value(value: str, parameter_name: str = "") -> str:
     return cleaned_value
 
 
-def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
+def extract_parameters_regex(raw_text: str, columns: list[str], pdf_path: str = "") -> dict:
     """Lightweight, deterministic extraction for common parameters and synonyms.
     Only returns keys that exist in provided columns list (exact case preserved).
     """
@@ -483,12 +559,35 @@ def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
             return s
         return clean_coa_value(s, param_name)
 
-    # AI (Acetone/Aceton insoluble)
-    ai_val = capture(r"(?:Acetone|Aceton)\s+insoluble\s*([^\n\r]*)")
+    # AI (Acetone/Aceton insoluble) - Enhanced patterns to prioritize actual values
+    ai_val = None
+    
+    # Pattern 1: Look for direct value patterns like "Aceton Insoluble 30,6 %"
+    ai_direct = capture(r"(?:Acetone|Aceton)\s+[Ii]nsoluble\s+(\d+[,\.]\d+\s*%)")
+    if ai_direct:
+        ai_val = ai_direct
+        print(f"AI: Found direct value pattern: '{ai_val}'", file=sys.stderr)
+    
+    # Pattern 2: Look for percentage values near "Aceton insoluble" (within 100 characters)
+    if not ai_val:
+        ai_nearby = re.search(r"(?:Acetone|Aceton)\s+[Ii]nsoluble[\s\S]{0,100}?(\d+[,\.]\d+\s*%)", text, flags=re.IGNORECASE)
+        if ai_nearby:
+            ai_val = ai_nearby.group(1)
+            print(f"AI: Found nearby percentage value: '{ai_val}'", file=sys.stderr)
+    
+    # Pattern 3: Fallback - general pattern but filter out method descriptions and accreditation text
+    if not ai_val:
+        ai_general = capture(r"(?:Acetone|Aceton)\s+[Ii]nsoluble\s*([^\n\r]*)")
+        if ai_general and not re.search(r"(accredited|accreditation|method|analysis|determination|norm|ISO|AOCS)", ai_general, re.IGNORECASE):
+            # Only use if it contains a numeric value
+            if re.search(r'\d+[,.]?\d*', ai_general):
+                ai_val = ai_general
+                print(f"AI: Found general pattern: '{ai_val}'", file=sys.stderr)
+    
     if ai_val:
         key = map_to_available_key(["AI", "Acetone Insoluble", "Aceton insoluble"], columns)
         if key:
-            out[key] = ai_val
+            out[key] = extract_scalar(ai_val, key)
 
     # AV (Acid value)
     av_val = capture(r"Acid\s+value\s*([^\n\r]*)")
@@ -498,32 +597,41 @@ def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
             out[key] = av_val
 
     # POV (Peroxide value)
-    # Sometimes appears multiple times. Prefer the occurrence that contains actual measurement units.
+    # Handle multi-line patterns and filter out accreditation references
     pov_val = None
-    matches = list(re.finditer(r"Peroxide\s+value\s*([^\n\r]*)", text, flags=re.IGNORECASE))
     
-    # First, look for matches with actual measurement units (meq, mg/kg, etc.)
-    for m in matches:
-        candidate = m.group(1).strip()
-        # Prioritize matches with measurement units
-        if re.search(r"\d+[,.]?\d*\s*(meq|mg|µg|ug)\s*[O2/kg|/kg|/g]", candidate, flags=re.IGNORECASE):
-            pov_val = candidate
-            print(f"POV: Found measurement with units: '{pov_val}'", file=sys.stderr)
-            break
+    # First, try to find complete peroxide value with units in nearby lines
+    pov_multiline = re.search(r"Peroxide\s+value[\s\S]{0,100}?((?:Less\s+than\s+|<\s*)?(?:\d+[,.]?\d*)\s*(?:meq|mg|µg|ug)[\s\S]{0,20}?(?:O2/kg|/kg|/g))", text, flags=re.IGNORECASE)
+    if pov_multiline:
+        pov_val = pov_multiline.group(1).strip()
+        print(f"POV: Found multi-line value with units: '{pov_val}'", file=sys.stderr)
     
-    # If no unit match, look for numeric values with "not detected" or "less than"
+    # If no multi-line match, try single line patterns
     if pov_val is None:
+        matches = list(re.finditer(r"Peroxide\s+value\s*([^\n\r]*)", text, flags=re.IGNORECASE))
+        
+        # Filter out accreditation and method references
+        valid_matches = []
         for m in matches:
             candidate = m.group(1).strip()
-            if re.search(r"(\d|not\s+detected|less\s+than)", candidate, flags=re.IGNORECASE) and not re.search(r"ISO\s+\d+", candidate, flags=re.IGNORECASE):
+            # Skip if it contains accreditation references, method references, or ISO standards
+            if re.search(r"(accreditation|accredited|method|ISO\s+\d+|L\d+)", candidate, flags=re.IGNORECASE):
+                continue
+            # Must contain numeric content or measurement terms
+            if re.search(r"(\d|not\s+detected|less\s+than|<)", candidate, flags=re.IGNORECASE):
+                valid_matches.append((m, candidate))
+        
+        # Prioritize matches with measurement units
+        for m, candidate in valid_matches:
+            if re.search(r"\d+[,.]?\d*\s*(meq|mg|µg|ug)\s*[O2/kg|/kg|/g]", candidate, flags=re.IGNORECASE):
                 pov_val = candidate
-                print(f"POV: Found numeric/ND value: '{pov_val}'", file=sys.stderr)
+                print(f"POV: Found single-line value with units: '{pov_val}'", file=sys.stderr)
                 break
-    
-    # Last resort: use the last match if available
-    if pov_val is None and matches:
-        pov_val = matches[-1].group(1).strip()
-        print(f"POV: Using last match as fallback: '{pov_val}'", file=sys.stderr)
+        
+        # If still no match, use first valid numeric match
+        if pov_val is None and valid_matches:
+            pov_val = valid_matches[0][1]
+            print(f"POV: Found valid numeric value: '{pov_val}'", file=sys.stderr)
     
     if pov_val:
         key = map_to_available_key(["POV", "Peroxide Value"], columns)
@@ -559,8 +667,45 @@ def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
         if key:
             out[key] = hex_val
 
-    # Toluene insolubles
-    tol_val = capture(r"Toluene\s+insoluble(?:\s+matter)?\s*([^\n\r]*)")
+    # Toluene insolubles - enhanced patterns for different document types
+    tol_val = None
+    
+    # Pattern 1: Look for direct value patterns like "Toluene insoluble matter 0,43 %"
+    tol_direct = capture(r"Toluene\s+insoluble(?:\s+matter)?\s+(\d+[,\.]\d+\s*%)")
+    if tol_direct:
+        tol_val = tol_direct
+        print(f"Toluene: Found direct value pattern: '{tol_val}'", file=sys.stderr)
+    
+    # Pattern 2: Look for table format where value might be on same line
+    if not tol_val:
+        tol_table = capture(r"Toluene\s+insoluble(?:\s+matter)?[^\d]*(\d+[,\.]\d+)")
+        if tol_table:
+            tol_val = tol_table + " %"  # Add percentage if missing
+            print(f"Toluene: Found table format: '{tol_val}'", file=sys.stderr)
+    
+    # Pattern 3: Look for the value near "Toluene insoluble" (within 100 characters)
+    if not tol_val:
+        tol_nearby = re.search(r"Toluene\s+insoluble(?:\s+matter)?[\s\S]{0,100}?(\d+[,\.]\d+\s*%)", text, flags=re.IGNORECASE)
+        if tol_nearby:
+            tol_val = tol_nearby.group(1)
+            print(f"Toluene: Found nearby value: '{tol_val}'", file=sys.stderr)
+    
+    # Pattern 4: For retest documents, look for any percentage value in context of toluene testing
+    if not tol_val and ("retest" in pdf_path.lower() or "TI" in pdf_path):
+        # If this is a retest document, look for standalone percentage values
+        percentage_values = re.findall(r'\b(\d+[,\.]\d+)\s*%', text)
+        if percentage_values:
+            # For retest TI documents, the first percentage value is likely the result
+            tol_val = percentage_values[0] + " %"
+            print(f"Toluene: Retest document - using first percentage value: '{tol_val}'", file=sys.stderr)
+    
+    # Pattern 5: Fallback - general pattern but filter out method descriptions
+    if not tol_val:
+        tol_general = capture(r"Toluene\s+insoluble(?:\s+matter)?\s*([^\n\r]*)")
+        if tol_general and not re.search(r"(Analysis|Method|Determination|Norm|ISO)", tol_general, re.IGNORECASE):
+            tol_val = tol_general
+            print(f"Toluene: Found general pattern: '{tol_val}'", file=sys.stderr)
+    
     if tol_val:
         key = map_to_available_key(["Toluene Insolubles", "Toluene insoluble matter"], columns)
         if key:
@@ -709,15 +854,18 @@ def extract_parameters_regex(raw_text: str, columns: list[str]) -> dict:
         # Clean up the value - convert various absent formats to "negative"
         cleaned_cronobacter = cronobacter_val.strip()
         
-        # Handle spaced text like "abse n t i n 1 0 g"
-        cleaned_cronobacter = re.sub(r'\s+', ' ', cleaned_cronobacter)  # Normalize spaces
+        # Handle spaced text like "abse n t i n 1 0 g" or "d e t e c t e d"
+        # Remove spaces from sequences where each "word" is a single character
+        cleaned_cronobacter = re.sub(r'\b(\w)(\s+\w)+\b', lambda m: m.group(0).replace(' ', ''), cleaned_cronobacter)
+        
+        print(f"Cronobacter: After space removal: '{cleaned_cronobacter}'", file=sys.stderr)
         
         # Convert various "absent/negative" patterns to "negative"
         patterns_for_negative = [
             r"absent\s+in\s+\d+\s*g",  # "absent in 10 g"
-            r"abse.*?n.*?t.*?i.*?n.*?\d+.*?g",  # "abse n t i n 1 0 g" with flexible spacing
+            r"absentin\d+g",  # "absentin10g"
             r"negative",
-            r"not\s+detected",
+            r"not\s*detected",  # "notdetected" or "not detected"
             r"nd\b"
         ]
         
@@ -1352,6 +1500,52 @@ def main():
         sys.exit(1)
 
     raw_text = extract_text_from_pdf(pdf_path)
+    
+    # Check if PDF has meaningful text content
+    meaningful_text = raw_text.strip()
+    if len(meaningful_text) < 50:  # Minimum threshold for meaningful content
+        # Before giving up, check if this is a scanned PDF that might need OCR
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                total_images = sum(len(page.images) for page in pdf.pages if hasattr(page, 'images'))
+                if total_images > 0:
+                    print(f"PDF appears to be scanned (found {total_images} images). Attempting OCR extraction...", file=sys.stderr)
+                    
+                    # Try OCR extraction
+                    ocr_text = extract_text_with_ocr(pdf_path)
+                    if len(ocr_text.strip()) >= 50:
+                        print(f"OCR successful! Extracted {len(ocr_text)} characters", file=sys.stderr)
+                        raw_text = ocr_text  # Use OCR text for processing
+                        meaningful_text = raw_text.strip()
+                    else:
+                        print(json.dumps({
+                            "error": "PDF appears to be a scanned image document. OCR extraction attempted but failed to extract sufficient text.",
+                            "text_length": len(meaningful_text),
+                            "ocr_text_length": len(ocr_text.strip()),
+                            "images_found": total_images,
+                            "suggestion": "Try using higher quality scan or professional OCR software.",
+                            "extraction_phase": phase
+                        }))
+                        sys.exit(1)
+                else:
+                    print(json.dumps({
+                        "error": "PDF file contains insufficient text content and no images. This may be an empty or corrupted document.",
+                        "text_length": len(meaningful_text),
+                        "extraction_phase": phase
+                    }))
+                    sys.exit(1)
+        except Exception as e:
+            print(f"Error checking PDF structure: {e}", file=sys.stderr)
+            print(json.dumps({
+                "error": "PDF file contains insufficient text content. This may be a scanned image or empty document. Please ensure the PDF has extractable text or use OCR processing.",
+                "text_length": len(meaningful_text),
+                "extraction_phase": phase
+            }))
+            sys.exit(1)
+    
+    print(f"PDF text extraction successful: {len(meaningful_text)} characters", file=sys.stderr)
+    
     ids = find_ids(raw_text)
 
     # Check if this is a Spectral Service AG document
@@ -1364,7 +1558,7 @@ def main():
         print(f"Detected Spectral Service AG document. Extracted data: {spectral_data}", file=sys.stderr)
 
     # Deterministic regex-based extraction for core fields first
-    regex_data = extract_parameters_regex(raw_text, columns)
+    regex_data = extract_parameters_regex(raw_text, columns, pdf_path)
     ai_data = call_openai_structured(raw_text, columns)
 
     # Normalize AI keys to exact available column names (strip definitions/synonyms)

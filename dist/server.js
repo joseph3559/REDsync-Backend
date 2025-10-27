@@ -1,8 +1,8 @@
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
-import { PrismaClient } from "../generated/prisma";
-import { app } from "./app";
+import { PrismaClient } from "../generated/prisma/index.js";
+import { app } from "./app.js";
 dotenv.config();
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || "";

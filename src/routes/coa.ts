@@ -78,6 +78,7 @@ function mapExtractedDataToDbFields(extractedData: Record<string, unknown>) {
     'Color Gardner (As is)': 'colorGardnerAsIs',
     'Color Iodine': 'colorIodine',
     'Toluene Insolubles': 'tolueneInsolubles',
+    'Toluene insoluble matter': 'tolueneInsolubles',
     'Specific gravity': 'specificGravity',
     'FFA (%Oleic) at loading': 'ffaAtLoading',
     'Iodine value': 'iodineValue',
@@ -289,38 +290,93 @@ router.post("/upload", authenticate, upload.array("files"), async (req, res) => 
     const savedRecords: Array<any> = [];
 
     for (const file of files) {
-      const parsed = await runPythonParser({
-        pdfPath: file.path,
-        columns,
-        openaiApiKey: process.env.OPENAI_API_KEY || "",
-        phase: parseInt(phase),
-      });
-      
-      // Map extracted data to database fields
-      const dbData = mapExtractedDataToDbFields(parsed);
-      
-      // Save to database with upsert logic to prevent duplicates
       try {
-        const savedRecord = await upsertCoaRecord(userId, file.originalname, dbData);
-        savedRecords.push(savedRecord);
-      } catch (dbError) {
-        console.error('Database save error:', dbError);
-        // Continue processing other files even if one fails
+        const parsed = await runPythonParser({
+          pdfPath: file.path,
+          columns,
+          openaiApiKey: process.env.OPENAI_API_KEY || "",
+          phase: parseInt(phase),
+        });
+        
+        // Check if parsing returned an error
+        if (parsed.error) {
+          console.error(`PDF parsing error for ${file.originalname}: ${parsed.error}`);
+          results.push({
+            file: file.originalname,
+            phase: parseInt(phase),
+            error: parsed.error,
+            text_length: parsed.text_length,
+            status: 'failed'
+          });
+          continue; // Skip database save for failed parsing
+        }
+        
+        // Check if we have meaningful data extracted (not just phase info)
+        const hasData = Object.keys(parsed).some(key => 
+          key !== 'extraction_phase' && 
+          key !== 'document_type' && 
+          parsed[key] !== null && 
+          parsed[key] !== undefined && 
+          parsed[key] !== ''
+        );
+        
+        if (!hasData) {
+          console.log(`No meaningful data extracted from ${file.originalname}`);
+          results.push({
+            file: file.originalname,
+            phase: parseInt(phase),
+            warning: 'No meaningful data could be extracted from this PDF',
+            status: 'no_data'
+          });
+          continue; // Skip database save for no data
+        }
+        
+        // Map extracted data to database fields
+        const dbData = mapExtractedDataToDbFields(parsed);
+        
+        // Save to database with upsert logic to prevent duplicates
+        try {
+          const savedRecord = await upsertCoaRecord(userId, file.originalname, dbData);
+          savedRecords.push(savedRecord);
+        } catch (dbError) {
+          console.error('Database save error:', dbError);
+          // Continue processing other files even if one fails
+        }
+        
+        // Keep the original format for the response
+        results.push({ 
+          file: file.originalname,
+          phase: parseInt(phase),
+          status: 'success',
+          ...parsed 
+        });
+        
+      } catch (parseError) {
+        console.error(`Parsing error for ${file.originalname}:`, parseError);
+        results.push({
+          file: file.originalname,
+          phase: parseInt(phase),
+          error: String(parseError),
+          status: 'failed'
+        });
       }
-      
-      // Keep the original format for the response
-      results.push({ 
-        file: path.basename(file.path), 
-        phase: parseInt(phase),
-        ...parsed 
-      });
     }
+    
+    // Calculate statistics
+    const successfulFiles = results.filter(r => r.status === 'success').length;
+    const failedFiles = results.filter(r => r.status === 'failed').length;
+    const noDataFiles = results.filter(r => r.status === 'no_data').length;
     
     return res.json({ 
       results, 
       phase: parseInt(phase),
-      savedToDatabase: savedRecords.length,
-      totalFiles: files.length
+      statistics: {
+        totalFiles: files.length,
+        successful: successfulFiles,
+        failed: failedFiles,
+        noData: noDataFiles,
+        savedToDatabase: savedRecords.length
+      }
     });
   } catch (err) {
     return res.status(500).json({ message: "Failed to process PDFs", error: String(err) });
@@ -347,6 +403,7 @@ router.get("/records", authenticate, async (req, res) => {
         colorGardner10: true,
         viscosity25: true,
         hexaneInsolubles: true,
+        tolueneInsolubles: true,
         moisture: true,
         lead: true,
         mercury: true,
@@ -413,6 +470,7 @@ router.get("/records", authenticate, async (req, res) => {
         'Color Gardner (10% dil.)': formatValue(record.colorGardner10),
         'Viscosity at 25°C': formatValue(record.viscosity25),
         'Hexane Insolubles': formatValue(record.hexaneInsolubles),
+        'Toluene Insolubles': formatValue(record.tolueneInsolubles),
         'Moisture': formatValue(record.moisture),
         // Heavy metals
         'Lead': formatValue(record.lead),
@@ -605,6 +663,91 @@ router.get("/stats", authenticate, async (req, res) => {
   } catch (error) {
     console.error("COA stats error:", error);
     res.status(500).json({ message: "Failed to fetch COA statistics" });
+  }
+});
+
+// Cleanup endpoint to remove invalid COA records (all values are "-" or null)
+router.post("/cleanup-invalid", authenticate, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    
+    console.log(`Starting invalid record cleanup for user: ${userId}`);
+    
+    // Get all records for the user
+    const allRecords = await prisma.coaRecord.findMany({
+      where: { userId }
+    });
+    
+    console.log(`Found ${allRecords.length} total records`);
+    
+    let invalidRecords = 0;
+    const idsToDelete: string[] = [];
+    
+    // Check each record for invalid data patterns
+    for (const record of allRecords) {
+      // Count non-null/non-dash values (excluding metadata fields)
+      const dataFields = [
+        'ai', 'av', 'pov', 'colorGardner10', 'viscosity25', 'hexaneInsolubles', 
+        'tolueneInsolubles', 'moisture', 'lead', 'mercury', 'arsenic', 'iron',
+        'enterobacteriaceae', 'totalPlateCount', 'yeastsMolds', 'yeasts', 'moulds',
+        'salmonella25g', 'salmonella250g', 'eColi', 'listeria25g', 'coliforms',
+        'bacillusCereus', 'mohMoshMoah', 'soyAllergen', 'cronobacterSpp',
+        'pc', 'pe', 'lpc', 'pa', 'pi', 'p', 'pl', 'pah4', 'ochratoxinA',
+        'pesticides', 'heavyMetals', 'peanutContent', 'sumDioxinsWhoPcddTeq',
+        'sumDioxinsDlPcbsTeq', 'sumPcb28To180', 'gmoTest'
+      ];
+      
+      let validDataCount = 0;
+      let totalDataCount = 0;
+      
+      for (const field of dataFields) {
+        const value = record[field as keyof typeof record];
+        totalDataCount++;
+        
+        if (value !== null && value !== undefined && value !== '' && value !== '-') {
+          validDataCount++;
+        }
+      }
+      
+      // Also check if sample_id and batch_id are missing
+      const hasSampleId = record.sampleId && record.sampleId !== '' && record.sampleId !== '-';
+      const hasBatchId = record.batchId && record.batchId !== '' && record.batchId !== '-';
+      
+      // Consider a record invalid if:
+      // 1. No valid data in any field AND no sample/batch IDs, OR
+      // 2. Less than 5% of fields have valid data AND no sample/batch IDs
+      const isInvalid = (validDataCount === 0 && !hasSampleId && !hasBatchId) || 
+                       (validDataCount / totalDataCount < 0.05 && !hasSampleId && !hasBatchId);
+      
+      if (isInvalid) {
+        console.log(`Invalid record found: ${record.fileName} - Valid fields: ${validDataCount}/${totalDataCount}, SampleID: ${hasSampleId}, BatchID: ${hasBatchId}`);
+        idsToDelete.push(record.id);
+        invalidRecords++;
+      }
+    }
+    
+    // Delete invalid records
+    if (idsToDelete.length > 0) {
+      const deleted = await prisma.coaRecord.deleteMany({
+        where: {
+          id: { in: idsToDelete },
+          userId: userId
+        }
+      });
+      
+      console.log(`Deleted ${deleted.count} invalid records`);
+    }
+    
+    return res.json({
+      message: "Invalid record cleanup completed successfully",
+      invalidRecordsFound: invalidRecords,
+      recordsDeleted: idsToDelete.length,
+      totalRecordsChecked: allRecords.length
+    });
+    
+  } catch (err) {
+    console.error('Invalid cleanup error:', err);
+    return res.status(500).json({ message: "Failed to cleanup invalid records", error: String(err) });
   }
 });
 

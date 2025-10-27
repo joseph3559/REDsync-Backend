@@ -3,7 +3,7 @@ import path from "path";
 import xlsx from "xlsx";
 import Fuse from "fuse.js";
 import axios from "axios";
-import { PrismaClient } from "../../generated/prisma";
+import { PrismaClient } from "../../generated/prisma/index.js";
 import { mapProductToRedEquivalent } from "./productMapping.js";
 const prisma = new PrismaClient();
 // Headers must match exactly the example report (including case/spacing)

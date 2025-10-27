@@ -3,8 +3,8 @@ import multer from "multer";
 import path from "path";
 import { getPhase1CoaColumns, getPhase2CoaColumns, getCoaColumnsWithConfig, getPhase1ColumnsWithConfig, getCoaColumnsFromExcel } from "../utils/coaColumns.js";
 import { spawn } from "child_process";
-import { PrismaClient } from "../../generated/prisma";
-import { authenticate } from "../utils/jwtAuth";
+import { PrismaClient } from "../../generated/prisma/index.js";
+import { authenticate } from "../utils/jwtAuth.js";
 const router = Router();
 const prisma = new PrismaClient();
 // Mapping function to convert extracted data to database fields
@@ -34,6 +34,11 @@ function mapExtractedDataToDbFields(extractedData) {
         'Salmonella (in 250g)': 'salmonella250g',
         'E. coli': 'eColi',
         'Listeria monocytogenes (in 25g)': 'listeria25g',
+        'Coliforms (in 1g)': 'coliforms',
+        'Bacillus cereus': 'bacillusCereus',
+        'MOH (MOSH/MOAH)': 'mohMoshMoah',
+        'Soy Allergen': 'soyAllergen',
+        'Cronobacter spp.': 'cronobacterSpp',
         // Phospholipids
         'PC': 'pc',
         'PE': 'pe',
@@ -48,12 +53,16 @@ function mapExtractedDataToDbFields(extractedData) {
         'Pesticides': 'pesticides',
         'Heavy Metals': 'heavyMetals',
         'Peanut content': 'peanutContent',
+        'Sum Dioxins (WHO-PCDD/F-TEQ)': 'sumDioxinsWhoPcddTeq',
+        'Sum Dioxins and Dioxin Like PCB\'s (WHOPCDD/F-PCBTEQ)': 'sumDioxinsDlPcbsTeq',
+        'Sum PCB28, PCB52, PCB101, PCB138,PCB153 and PCB180': 'sumPcb28To180',
         // GMO
         'PCR, 50 cycl. (GMO), 35S/NOS/FMV': 'gmoTest',
         // Other chemical
         'Color Gardner (As is)': 'colorGardnerAsIs',
         'Color Iodine': 'colorIodine',
         'Toluene Insolubles': 'tolueneInsolubles',
+        'Toluene insoluble matter': 'tolueneInsolubles',
         'Specific gravity': 'specificGravity',
         'FFA (%Oleic) at loading': 'ffaAtLoading',
         'Iodine value': 'iodineValue',
@@ -99,10 +108,10 @@ function normalizeSampleId(sampleId) {
 }
 // Helper function to extract sample and batch IDs from filename as fallback
 function extractIdsFromFilename(fileName) {
-    // Pattern: "BA001734 - M20253004 - Ali.pdf" or similar
-    // Look for patterns like "BA001XXX" for batch and "M20XXXXXX" for sample
-    const batchMatch = fileName.match(/\b(BA\d{6})\b/i);
-    const sampleMatch = fileName.match(/\b(M\s*\d{8})\b/i);
+    // Pattern: "BA001734 - M20253004 - Ali.pdf" or "CS30-00-1625 - M20252511.1 - Lab.pdf" or similar
+    // Look for patterns like "BA001XXX" or "CS##-##-####" for batch and "M20XXXXXX" or "M20XXXXXX.X" for sample
+    const batchMatch = fileName.match(/\b((?:BA\d{6})|(?:CS\d{2}-\d{2}-\d{4}))\b/i);
+    const sampleMatch = fileName.match(/\b(M\s*\d{8}(?:\.\d+)?)\b/i);
     return {
         batchId: batchMatch ? batchMatch[1] : null,
         sampleId: sampleMatch ? sampleMatch[1].replace(/\s+/g, '').trim() : null // Remove any spaces within the sample ID
@@ -247,35 +256,84 @@ router.post("/upload", authenticate, upload.array("files"), async (req, res) => 
         const results = [];
         const savedRecords = [];
         for (const file of files) {
-            const parsed = await runPythonParser({
-                pdfPath: file.path,
-                columns,
-                openaiApiKey: process.env.OPENAI_API_KEY || "",
-                phase: parseInt(phase),
-            });
-            // Map extracted data to database fields
-            const dbData = mapExtractedDataToDbFields(parsed);
-            // Save to database with upsert logic to prevent duplicates
             try {
-                const savedRecord = await upsertCoaRecord(userId, file.originalname, dbData);
-                savedRecords.push(savedRecord);
+                const parsed = await runPythonParser({
+                    pdfPath: file.path,
+                    columns,
+                    openaiApiKey: process.env.OPENAI_API_KEY || "",
+                    phase: parseInt(phase),
+                });
+                // Check if parsing returned an error
+                if (parsed.error) {
+                    console.error(`PDF parsing error for ${file.originalname}: ${parsed.error}`);
+                    results.push({
+                        file: file.originalname,
+                        phase: parseInt(phase),
+                        error: parsed.error,
+                        text_length: parsed.text_length,
+                        status: 'failed'
+                    });
+                    continue; // Skip database save for failed parsing
+                }
+                // Check if we have meaningful data extracted (not just phase info)
+                const hasData = Object.keys(parsed).some(key => key !== 'extraction_phase' &&
+                    key !== 'document_type' &&
+                    parsed[key] !== null &&
+                    parsed[key] !== undefined &&
+                    parsed[key] !== '');
+                if (!hasData) {
+                    console.log(`No meaningful data extracted from ${file.originalname}`);
+                    results.push({
+                        file: file.originalname,
+                        phase: parseInt(phase),
+                        warning: 'No meaningful data could be extracted from this PDF',
+                        status: 'no_data'
+                    });
+                    continue; // Skip database save for no data
+                }
+                // Map extracted data to database fields
+                const dbData = mapExtractedDataToDbFields(parsed);
+                // Save to database with upsert logic to prevent duplicates
+                try {
+                    const savedRecord = await upsertCoaRecord(userId, file.originalname, dbData);
+                    savedRecords.push(savedRecord);
+                }
+                catch (dbError) {
+                    console.error('Database save error:', dbError);
+                    // Continue processing other files even if one fails
+                }
+                // Keep the original format for the response
+                results.push({
+                    file: file.originalname,
+                    phase: parseInt(phase),
+                    status: 'success',
+                    ...parsed
+                });
             }
-            catch (dbError) {
-                console.error('Database save error:', dbError);
-                // Continue processing other files even if one fails
+            catch (parseError) {
+                console.error(`Parsing error for ${file.originalname}:`, parseError);
+                results.push({
+                    file: file.originalname,
+                    phase: parseInt(phase),
+                    error: String(parseError),
+                    status: 'failed'
+                });
             }
-            // Keep the original format for the response
-            results.push({
-                file: path.basename(file.path),
-                phase: parseInt(phase),
-                ...parsed
-            });
         }
+        // Calculate statistics
+        const successfulFiles = results.filter(r => r.status === 'success').length;
+        const failedFiles = results.filter(r => r.status === 'failed').length;
+        const noDataFiles = results.filter(r => r.status === 'no_data').length;
         return res.json({
             results,
             phase: parseInt(phase),
-            savedToDatabase: savedRecords.length,
-            totalFiles: files.length
+            statistics: {
+                totalFiles: files.length,
+                successful: successfulFiles,
+                failed: failedFiles,
+                noData: noDataFiles,
+                savedToDatabase: savedRecords.length
+            }
         });
     }
     catch (err) {
@@ -301,6 +359,7 @@ router.get("/records", authenticate, async (req, res) => {
                 colorGardner10: true,
                 viscosity25: true,
                 hexaneInsolubles: true,
+                tolueneInsolubles: true,
                 moisture: true,
                 lead: true,
                 mercury: true,
@@ -315,6 +374,11 @@ router.get("/records", authenticate, async (req, res) => {
                 salmonella250g: true,
                 eColi: true,
                 listeria25g: true,
+                coliforms: true,
+                bacillusCereus: true,
+                mohMoshMoah: true,
+                soyAllergen: true,
+                cronobacterSpp: true,
                 pc: true,
                 pe: true,
                 lpc: true,
@@ -327,12 +391,22 @@ router.get("/records", authenticate, async (req, res) => {
                 pesticides: true,
                 heavyMetals: true,
                 peanutContent: true,
+                sumDioxinsWhoPcddTeq: true,
+                sumDioxinsDlPcbsTeq: true,
+                sumPcb28To180: true,
                 gmoTest: true,
                 additionalFields: true,
                 createdAt: true,
                 updatedAt: true
             }
         });
+        // Helper function to format database values (replace null with appropriate placeholder)
+        const formatValue = (value) => {
+            if (value === null || value === undefined || value === 'null') {
+                return '-';
+            }
+            return String(value);
+        };
         // Convert database format back to frontend format
         const formattedRecords = records.map(record => {
             const formatted = {
@@ -344,44 +418,53 @@ router.get("/records", authenticate, async (req, res) => {
                 'Sample #': record.sampleId,
                 'Batch': record.batchId,
                 // Core parameters
-                'AI': record.ai,
-                'AV': record.av,
-                'POV': record.pov,
-                'Color Gardner (10% dil.)': record.colorGardner10,
-                'Viscosity at 25°C': record.viscosity25,
-                'Hexane Insolubles': record.hexaneInsolubles,
-                'Moisture': record.moisture,
+                'AI': formatValue(record.ai),
+                'AV': formatValue(record.av),
+                'POV': formatValue(record.pov),
+                'Color Gardner (10% dil.)': formatValue(record.colorGardner10),
+                'Viscosity at 25°C': formatValue(record.viscosity25),
+                'Hexane Insolubles': formatValue(record.hexaneInsolubles),
+                'Toluene Insolubles': formatValue(record.tolueneInsolubles),
+                'Moisture': formatValue(record.moisture),
                 // Heavy metals
-                'Lead': record.lead,
-                'Mercury': record.mercury,
-                'Arsenic': record.arsenic,
-                'Iron (Fe)': record.iron,
+                'Lead': formatValue(record.lead),
+                'Mercury': formatValue(record.mercury),
+                'Arsenic': formatValue(record.arsenic),
+                'Iron (Fe)': formatValue(record.iron),
                 // Microbiology
-                'Enterobacteriaceae': record.enterobacteriaceae,
-                'Total Plate Count': record.totalPlateCount,
-                'Yeasts & Molds': record.yeastsMolds,
-                'Yeasts': record.yeasts,
-                'Moulds': record.moulds,
-                'Salmonella (in 25g)': record.salmonella25g,
-                'Salmonella (in 250g)': record.salmonella250g,
-                'E. coli': record.eColi,
-                'Listeria monocytogenes (in 25g)': record.listeria25g,
+                'Enterobacteriaceae': formatValue(record.enterobacteriaceae),
+                'Total Plate Count': formatValue(record.totalPlateCount),
+                'Yeasts & Molds': formatValue(record.yeastsMolds),
+                'Yeasts': formatValue(record.yeasts),
+                'Moulds': formatValue(record.moulds),
+                'Salmonella (in 25g)': formatValue(record.salmonella25g),
+                'Salmonella (in 250g)': formatValue(record.salmonella250g),
+                'E. coli': formatValue(record.eColi),
+                'Listeria monocytogenes (in 25g)': formatValue(record.listeria25g),
+                'Coliforms (in 1g)': formatValue(record.coliforms),
+                'Bacillus cereus': formatValue(record.bacillusCereus),
+                'MOH (MOSH/MOAH)': formatValue(record.mohMoshMoah),
+                'Soy Allergen': formatValue(record.soyAllergen),
+                'Cronobacter spp.': formatValue(record.cronobacterSpp),
                 // Phospholipids
-                'PC': record.pc,
-                'PE': record.pe,
-                'LPC': record.lpc,
-                'PA': record.pa,
-                'PI': record.pi,
-                'P': record.p,
-                'PL': record.pl,
+                'PC': formatValue(record.pc),
+                'PE': formatValue(record.pe),
+                'LPC': formatValue(record.lpc),
+                'PA': formatValue(record.pa),
+                'PI': formatValue(record.pi),
+                'P': formatValue(record.p),
+                'PL': formatValue(record.pl),
                 // Contaminants
-                'PAH4': record.pah4,
-                'Ochratoxin A': record.ochratoxinA,
-                'Pesticides': record.pesticides,
-                'Heavy Metals': record.heavyMetals,
-                'Peanut content': record.peanutContent,
+                'PAH4': formatValue(record.pah4),
+                'Ochratoxin A': formatValue(record.ochratoxinA),
+                'Pesticides': formatValue(record.pesticides),
+                'Heavy Metals': formatValue(record.heavyMetals),
+                'Peanut content': formatValue(record.peanutContent),
+                'Sum Dioxins (WHO-PCDD/F-TEQ)': formatValue(record.sumDioxinsWhoPcddTeq),
+                'Sum Dioxins and Dioxin Like PCB\'s (WHOPCDD/F-PCBTEQ)': formatValue(record.sumDioxinsDlPcbsTeq),
+                'Sum PCB28, PCB52, PCB101, PCB138,PCB153 and PCB180': formatValue(record.sumPcb28To180),
                 // GMO
-                'PCR, 50 cycl. (GMO), 35S/NOS/FMV': record.gmoTest,
+                'PCR, 50 cycl. (GMO), 35S/NOS/FMV': formatValue(record.gmoTest),
                 // Additional fields from JSON
                 ...(record.additionalFields || {})
             };
@@ -518,6 +601,76 @@ router.get("/stats", authenticate, async (req, res) => {
     catch (error) {
         console.error("COA stats error:", error);
         res.status(500).json({ message: "Failed to fetch COA statistics" });
+    }
+});
+// Cleanup endpoint to remove invalid COA records (all values are "-" or null)
+router.post("/cleanup-invalid", authenticate, async (req, res) => {
+    try {
+        const userId = req.userId;
+        console.log(`Starting invalid record cleanup for user: ${userId}`);
+        // Get all records for the user
+        const allRecords = await prisma.coaRecord.findMany({
+            where: { userId }
+        });
+        console.log(`Found ${allRecords.length} total records`);
+        let invalidRecords = 0;
+        const idsToDelete = [];
+        // Check each record for invalid data patterns
+        for (const record of allRecords) {
+            // Count non-null/non-dash values (excluding metadata fields)
+            const dataFields = [
+                'ai', 'av', 'pov', 'colorGardner10', 'viscosity25', 'hexaneInsolubles',
+                'tolueneInsolubles', 'moisture', 'lead', 'mercury', 'arsenic', 'iron',
+                'enterobacteriaceae', 'totalPlateCount', 'yeastsMolds', 'yeasts', 'moulds',
+                'salmonella25g', 'salmonella250g', 'eColi', 'listeria25g', 'coliforms',
+                'bacillusCereus', 'mohMoshMoah', 'soyAllergen', 'cronobacterSpp',
+                'pc', 'pe', 'lpc', 'pa', 'pi', 'p', 'pl', 'pah4', 'ochratoxinA',
+                'pesticides', 'heavyMetals', 'peanutContent', 'sumDioxinsWhoPcddTeq',
+                'sumDioxinsDlPcbsTeq', 'sumPcb28To180', 'gmoTest'
+            ];
+            let validDataCount = 0;
+            let totalDataCount = 0;
+            for (const field of dataFields) {
+                const value = record[field];
+                totalDataCount++;
+                if (value !== null && value !== undefined && value !== '' && value !== '-') {
+                    validDataCount++;
+                }
+            }
+            // Also check if sample_id and batch_id are missing
+            const hasSampleId = record.sampleId && record.sampleId !== '' && record.sampleId !== '-';
+            const hasBatchId = record.batchId && record.batchId !== '' && record.batchId !== '-';
+            // Consider a record invalid if:
+            // 1. No valid data in any field AND no sample/batch IDs, OR
+            // 2. Less than 5% of fields have valid data AND no sample/batch IDs
+            const isInvalid = (validDataCount === 0 && !hasSampleId && !hasBatchId) ||
+                (validDataCount / totalDataCount < 0.05 && !hasSampleId && !hasBatchId);
+            if (isInvalid) {
+                console.log(`Invalid record found: ${record.fileName} - Valid fields: ${validDataCount}/${totalDataCount}, SampleID: ${hasSampleId}, BatchID: ${hasBatchId}`);
+                idsToDelete.push(record.id);
+                invalidRecords++;
+            }
+        }
+        // Delete invalid records
+        if (idsToDelete.length > 0) {
+            const deleted = await prisma.coaRecord.deleteMany({
+                where: {
+                    id: { in: idsToDelete },
+                    userId: userId
+                }
+            });
+            console.log(`Deleted ${deleted.count} invalid records`);
+        }
+        return res.json({
+            message: "Invalid record cleanup completed successfully",
+            invalidRecordsFound: invalidRecords,
+            recordsDeleted: idsToDelete.length,
+            totalRecordsChecked: allRecords.length
+        });
+    }
+    catch (err) {
+        console.error('Invalid cleanup error:', err);
+        return res.status(500).json({ message: "Failed to cleanup invalid records", error: String(err) });
     }
 });
 // Cleanup endpoint to remove duplicate COA records
@@ -716,6 +869,7 @@ function runPythonParser(args) {
         const payload = JSON.stringify({
             pdf_path: args.pdfPath,
             columns: args.columns,
+            openai_api_key: args.openaiApiKey,
             phase: args.phase || 1
         });
         py.stdin.write(payload);

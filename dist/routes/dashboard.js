@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { authenticate } from "../utils/jwtAuth";
-import { PrismaClient } from "../../generated/prisma";
-import { getQuestionnaires } from "../services/questionnaireService";
+import { authenticate } from "../utils/jwtAuth.js";
+import { PrismaClient } from "../../generated/prisma/index.js";
+import { getQuestionnaires } from "../services/questionnaireService.js";
 const router = Router();
 const prisma = new PrismaClient();
 router.get("/recent-activity", authenticate, async (req, res) => {
