@@ -5,4 +5,3 @@ node_modules
 /generated/prisma
 
 # Exclude GitHub workflows with secrets from being pushed
-.github/

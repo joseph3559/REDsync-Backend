@@ -1,0 +1,112 @@
+name: Deploy to Development
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Generate Prisma Client
+        run: npm run prisma:generate
+        
+      - name: Build application
+        run: npm run build
+        
+      - name: Deploy to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.DEV_JWT_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PORT: 4001
+        run: |
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H $VPS_HOST >> ~/.ssh/known_hosts
+          
+          # Create deployment package
+          tar -czf deployment.tar.gz \
+            dist/ \
+            generated/ \
+            package.json \
+            package-lock.json \
+            prisma/ \
+            assets/ \
+            --exclude=node_modules
+          
+          # Copy files to VPS
+          scp -i ~/.ssh/deploy_key deployment.tar.gz $VPS_USER@$VPS_HOST:/var/www/redsync/dev/
+          
+          # Deploy on VPS
+          ssh -i ~/.ssh/deploy_key $VPS_USER@$VPS_HOST << 'ENDSSH'
+            set -e
+            cd /var/www/redsync/dev
+            
+            # Extract deployment package
+            tar -xzf deployment.tar.gz
+            rm deployment.tar.gz
+            
+            # Install production dependencies
+            npm ci --only=production
+            
+            # Create .env file
+            cat > .env << EOF
+          DATABASE_URL=$DATABASE_URL
+          JWT_SECRET=$JWT_SECRET
+          OPENAI_API_KEY=$OPENAI_API_KEY
+          PORT=$PORT
+          NODE_ENV=development
+          EOF
+            
+            # Run database migrations
+            npx prisma migrate deploy
+            
+            # Create necessary directories
+            mkdir -p uploads/coa uploads/import-export uploads/questionnaires uploads/settings/logos uploads/settings/certifications
+            mkdir -p processed/questionnaires
+            
+            # Restart application with PM2
+            pm2 delete redsync-dev || true
+            pm2 start dist/server.js --name redsync-dev --time
+            pm2 save
+            
+            echo "Development deployment completed successfully!"
+          ENDSSH
+          
+      - name: Health Check
+        run: |
+          sleep 5
+          curl -f https://dev.redlecithin.online/api/test || exit 1
+          
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "✅ Development deployment successful!"
+          else
+            echo "❌ Development deployment failed!"
+            exit 1
+          fi
+
