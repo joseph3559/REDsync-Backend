@@ -3,6 +3,7 @@ import sys
 import json
 import os
 import re
+from typing import Optional
 
 # Optional heavy deps are imported lazily to speed cold starts
 def extract_text_from_pdf(path: str) -> str:
@@ -421,7 +422,7 @@ PARAMETER_DEFINITIONS = {
 }
 
 
-def map_to_available_key(candidates: list[str], available: list[str]) -> str | None:
+def map_to_available_key(candidates: list[str], available: list[str]) -> Optional[str]:
     """Return the first candidate that exists in available column names."""
     for cand in candidates:
         for col in available:
@@ -550,7 +551,7 @@ def extract_parameters_regex(raw_text: str, columns: list[str], pdf_path: str = 
     text = raw_text
     out: dict[str, str] = {}
 
-    def capture(pattern: str) -> str | None:
+    def capture(pattern: str) -> Optional[str]:
         m = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL)
         return m.group(1).strip() if m else None
 
