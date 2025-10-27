@@ -69,7 +69,6 @@ jobs:
             echo \"OPENAI_API_KEY=$OPENAI_API_KEY\" >> .env && \
             echo \"PORT=$PORT\" >> .env && \
             echo \"NODE_ENV=development\" >> .env && \
-            npx prisma migrate deploy && \
             mkdir -p uploads/coa uploads/import-export uploads/questionnaires uploads/settings/logos uploads/settings/certifications && \
             mkdir -p processed/questionnaires && \
             (pm2 delete redsync-dev || true) && \
