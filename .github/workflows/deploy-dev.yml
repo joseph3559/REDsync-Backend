@@ -48,13 +48,13 @@ jobs:
           
           # Create deployment package
           tar -czf deployment.tar.gz \
+            --exclude=node_modules \
             dist/ \
             generated/ \
             package.json \
             package-lock.json \
             prisma/ \
-            assets/ \
-            --exclude=node_modules
+            assets/
           
           # Copy files to VPS
           scp -i ~/.ssh/deploy_key deployment.tar.gz $VPS_USER@$VPS_HOST:/var/www/redsync/dev/
