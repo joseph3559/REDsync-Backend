@@ -1,6 +1,5 @@
 import OpenAI from "openai";
-
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+import { getOpenAIApiKey } from "../utils/apiKeys.js";
 
 type AiContext = {
   companyInfo: { key: string; value: string }[];
@@ -9,6 +8,13 @@ type AiContext = {
 };
 
 export async function generateAnswerForQuestion(question: string, ctx: AiContext): Promise<string> {
+  // Get API key from database or environment
+  const apiKey = await getOpenAIApiKey();
+  if (!apiKey) {
+    throw new Error("OpenAI API key not configured. Please add it in Settings > API & AI.");
+  }
+
+  const client = new OpenAI({ apiKey });
   const sys = `You are an assistant that completes supplier/compliance questionnaires for a food ingredients company (RED B.V.).
 Use only the provided context. If the question is not applicable due to certifications or scope, respond with "Not Applicable".
 Prefer concise, professional answers.`;

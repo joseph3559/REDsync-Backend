@@ -199,7 +199,8 @@ function detectPeriodFromFilename(filename) {
     return null;
 }
 async function maybeAskOpenAIForEntities(text, hints) {
-    const apiKey = process.env.OPENAI_API_KEY || "";
+    const { getOpenAIApiKey } = await import("../utils/apiKeys.js");
+    const apiKey = await getOpenAIApiKey();
     if (!apiKey || !text)
         return { productName: "", company: "", price: null, quantity: null, currency: "", incoterm: "", competitor: "", hsCode: hints.hs || "" };
     try {

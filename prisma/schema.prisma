@@ -10,7 +10,7 @@ datasource db {
 
 model AISettings {
   id                  String   @id @default(uuid())
-  openAiKey           String
+  apiKeys             Json?    // Stores multiple API keys: { openai: "sk-...", gemini: "...", anthropic: "...", cohere: "..." }
   model               String
   confidenceThreshold Float    @default(0.0)
   createdAt           DateTime @default(now())
