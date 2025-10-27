@@ -221,7 +221,7 @@ model User {
   id            String          @id @default(uuid())
   email         String          @unique
   password      String
-  role          Role            @default(admin)
+  role          String          @default("admin")
   status        UserStatus      @default(pending)
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -229,12 +229,6 @@ model User {
   AuditLog      AuditLog[]
   CoaRecord     CoaRecord[]
   Questionnaire Questionnaire[]
-}
-
-enum Role {
-  super_admin
-  admin
-  qa_team
 }
 
 enum UserStatus {

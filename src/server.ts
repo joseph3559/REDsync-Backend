@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
-import { PrismaClient, Role } from "../generated/prisma/index.js";
+import { PrismaClient } from "../generated/prisma/index.js";
 import { app } from "./app.js";
 
 dotenv.config();
@@ -33,7 +33,7 @@ function authenticateJWT(req: Request, res: Response, next: NextFunction) {
 }
 
 app.post("/api/auth/register", async (req, res) => {
-  const { email, password, role } = req.body as { email: string; password: string; role?: Role };
+  const { email, password, role } = req.body as { email: string; password: string; role?: string };
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password are required" });
   }

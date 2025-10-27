@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
-import { PrismaClient, Role, UserStatus } from "../generated/prisma/index.js";
+import { PrismaClient, UserStatus } from "../generated/prisma/index.js";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 
@@ -38,7 +38,7 @@ async function verifyAuth(req: express.Request, res: express.Response, next: exp
 
 // Registration endpoint - creates pending user awaiting approval
 app.post("/api/auth/register", async (req, res) => {
-  const { email, password, role, name } = req.body as { email: string; password: string; role?: Role; name?: string };
+  const { email, password, role, name } = req.body as { email: string; password: string; role?: string; name?: string };
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password are required" });
   }

@@ -87,13 +87,13 @@ const userCreateSchema = z.object({
   name: z.string().optional(),
   email: z.string().email(),
   password: z.string().min(6),
-  role: z.enum(["super_admin", "admin", "qa_team"]).default("admin"),
+  role: z.string().default("admin"),
 });
 const userUpdateSchema = z.object({
   name: z.string().optional(),
   email: z.string().email().optional(),
   password: z.string().min(6).optional(),
-  role: z.enum(["super_admin", "admin", "qa_team"]).optional(),
+  role: z.string().optional(),
 });
 
 import bcrypt from "bcrypt";
