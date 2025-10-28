@@ -12,7 +12,20 @@ dotenv.config();
 export const prisma = new PrismaClient();
 export const app = express();
 
-app.use(cors());
+// CORS configuration - allow frontend domains
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:4000',
+    'https://redlecithin.online',
+    'https://dv.redlecithin.online',
+    'https://backend.redlecithin.online',
+    'https://dev.redlecithin.online'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 app.use("/processed", express.static(path.join(process.cwd(), "processed")));
