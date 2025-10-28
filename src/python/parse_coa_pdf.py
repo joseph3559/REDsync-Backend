@@ -100,7 +100,24 @@ def extract_text_with_ocr(path: str) -> str:
 
 
 def extract_spectral_table_data(path: str) -> dict:
-    """Extract structured table data specifically for Spectral Service AG documents."""
+    """Extract structured table data specifically for Spectral Service AG documents.
+    
+    CRITICAL: Spectral Service AG documents may have malformed table structures where
+    the Weight-% column contains all values in a single multi-line cell instead of
+    individual cells per row. This function handles both:
+    
+    1. Well-formed tables: Each parameter has its own Weight-% value in a separate cell
+    2. Malformed tables: All Weight-% values are packed into one multi-line cell
+    
+    For malformed tables, we:
+    - Detect the multi-line Weight-% cell by checking for '\n' and multiple numeric values
+    - Split the cell into individual values
+    - Match values to parameters by their row position
+    - Handle Sum and Phosphorus rows separately as they may have their own cells
+    
+    This ensures complete extraction of phospholipid data (PC, PE, PI, PA, LPC, PL, P)
+    regardless of the PDF table structure.
+    """
     try:
         import pdfplumber  # type: ignore
     except Exception:
@@ -162,65 +179,215 @@ def extract_spectral_table_data(path: str) -> dict:
                         
                         print(f"Extracting data from table {table_num + 1}", file=sys.stderr)
                         
+                        # CRITICAL FIX FOR MALFORMED SPECTRAL SERVICE AG TABLES (Issue: BA001750 - M20253405 - PL.pdf)
+                        # ==================================================================================
+                        # Problem: Some Spectral PDFs have all Weight-% values packed into ONE multi-line cell
+                        # instead of individual cells per parameter row. This causes missing data extraction.
+                        # 
+                        # Example malformed structure:
+                        #   Row 3: Weight-% cell = "25.18\n0.10\n1.05\n21.69\n0.57\n10.32\n..."
+                        #   Row 4: PC cell has empty Weight-% value
+                        #   Row 5: 1-LPC cell has empty Weight-% value
+                        #   ...etc
+                        #
+                        # Solution: Detect multi-line cell, split values, match by row position
+                        # ==================================================================================
+                        
+                        weight_values_list = None
+                        for row_num, row in enumerate(table):
+                            if not row or len(row) <= weight_col_idx:
+                                continue
+                            weight_cell = str(row[weight_col_idx] or "").strip()
+                            # Check if this cell contains multiple lines with numeric values
+                            if '\n' in weight_cell:
+                                lines = weight_cell.split('\n')
+                                numeric_lines = [line.strip() for line in lines if line.strip() and re.search(r'\d+[.,]?\d*', line.strip())]
+                                if len(numeric_lines) >= 5:  # Multiple values indicate this is the multi-value cell
+                                    weight_values_list = numeric_lines
+                                    print(f"Found multi-line Weight-% cell at row {row_num}: {len(numeric_lines)} values", file=sys.stderr)
+                                    print(f"Values: {numeric_lines[:10]}", file=sys.stderr)  # Print first 10 for debugging
+                                    break
+                        
+                        # Build parameter list from table
+                        # Note: Sum and Phosphorus rows often have their own separate cell values
+                        # (not part of the multi-line cell), so we handle them separately
+                        parameters_list = []
+                        sum_row_data = None  # Track Sum row separately (for PL total)
+                        phosphorus_row_data = None  # Track Phosphorus row separately (for P total)
+                        
                         for row_num, row in enumerate(table[1:], 1):  # Skip header
                             if not row or len(row) <= max(weight_col_idx, parameter_col_idx or 0):
                                 continue
-                            
                             parameter = str(row[parameter_col_idx] if parameter_col_idx is not None else row[0] or "").strip()
-                            weight_value = str(row[weight_col_idx] or "").strip()
                             
-                            print(f"Row {row_num}: parameter='{parameter}', weight='{weight_value}'", file=sys.stderr)
+                            # Check for Sum and Phosphorus rows which may have their own values
+                            # These are typically calculated totals shown in separate cells
+                            # CRITICAL: Sum row may contain BOTH PL and P values in format "67.41\n2.72"
+                            if parameter.lower() == 'sum' or 'total' in parameter.lower():
+                                weight_cell = str(row[weight_col_idx] or "").strip()
+                                if weight_cell and '\n' in weight_cell:
+                                    # Extract numbers from multi-line value
+                                    # Line 1 = PL (Sum), Line 2 = P (Phosphorus)
+                                    lines = weight_cell.split('\n')
+                                    numeric_lines = []
+                                    for line in lines:
+                                        if re.search(r'\d+[.,]?\d*', line.strip()):
+                                            numeric_lines.append(line.strip())
+                                    
+                                    if len(numeric_lines) >= 1:
+                                        sum_row_data = (row_num, parameter, numeric_lines[0])
+                                        print(f"Found Sum row (PL) with value: {numeric_lines[0]}", file=sys.stderr)
+                                    
+                                    # Check if there's a second value (Phosphorus)
+                                    if len(numeric_lines) >= 2:
+                                        phosphorus_row_data = (row_num, 'Phosphorus', numeric_lines[1])
+                                        print(f"Found Phosphorus (P) in Sum row with value: {numeric_lines[1]}", file=sys.stderr)
+                                elif weight_cell and re.search(r'\d+[.,]?\d*', weight_cell):
+                                    sum_row_data = (row_num, parameter, weight_cell)
+                                    print(f"Found Sum row with value: {weight_cell}", file=sys.stderr)
+                                continue  # Don't add to parameters_list
                             
-                            if not parameter or not weight_value:
-                                continue
+                            if parameter.lower() == 'phosphorus' or parameter.lower() == 'p':
+                                weight_cell = str(row[weight_col_idx] or "").strip()
+                                if weight_cell and re.search(r'\d+[.,]?\d*', weight_cell):
+                                    phosphorus_row_data = (row_num, parameter, weight_cell)
+                                    print(f"Found Phosphorus row with value: {weight_cell}", file=sys.stderr)
+                                # Still add to parameters_list in case it's part of the multi-value cell
                             
-                            # Clean and validate weight value using standard cleaning function
-                            try:
-                                weight_clean = clean_coa_value(weight_value, parameter)
-                                weight_float = float(weight_clean.replace(',', '.'))
-                                print(f"Parsed weight: {weight_float} (cleaned from '{weight_value}')", file=sys.stderr)
-                            except (ValueError, TypeError):
-                                print(f"Could not parse weight value: '{weight_value}'", file=sys.stderr)
-                                continue
+                            if parameter and parameter.lower() not in ['internal standard', 'test item', 'phospholipid']:
+                                parameters_list.append((row_num, parameter))
+                        
+                        print(f"Found {len(parameters_list)} parameters: {[p[1] for p in parameters_list]}", file=sys.stderr)
+                        
+                        # If we have multi-line values, match them to parameters by position
+                        if weight_values_list and len(weight_values_list) >= 5:  # At least 5 values indicates multi-value extraction
+                            print(f"Matching {len(parameters_list)} parameters to {len(weight_values_list)} weight values", file=sys.stderr)
+                            for idx, (row_num, parameter) in enumerate(parameters_list):
+                                if idx < len(weight_values_list):
+                                    weight_value = weight_values_list[idx]
+                                    print(f"Matched row {row_num}: parameter='{parameter}' -> weight='{weight_value}'", file=sys.stderr)
+                                    
+                                    # Clean and validate weight value
+                                    try:
+                                        weight_clean = clean_coa_value(weight_value, parameter)
+                                        weight_float = float(weight_clean.replace(',', '.'))
+                                        print(f"Parsed weight: {weight_float} (cleaned from '{weight_value}')", file=sys.stderr)
+                                    except (ValueError, TypeError):
+                                        print(f"Could not parse weight value: '{weight_value}'", file=sys.stderr)
+                                        continue
+                                    
+                                    # Map specific parameters
+                                    param_lower = parameter.lower().strip()
+                                    
+                                    if param_lower == 'pc' or 'phosphatidylcholine' in param_lower:
+                                        results['PC'] = weight_clean
+                                        print(f"Found PC: {weight_clean}", file=sys.stderr)
+                                    elif param_lower == 'pe' or 'phosphatidylethanolamine' in param_lower:
+                                        results['PE'] = weight_clean
+                                        print(f"Found PE: {weight_clean}", file=sys.stderr)
+                                    elif param_lower == 'pi' or 'phosphatidylinositol' in param_lower:
+                                        results['PI'] = weight_clean
+                                        print(f"Found PI: {weight_clean}", file=sys.stderr)
+                                    elif param_lower == 'pa' or 'phosphatidic acid' in param_lower:
+                                        results['PA'] = weight_clean
+                                        print(f"Found PA: {weight_clean}", file=sys.stderr)
+                                    elif param_lower == 'p' or param_lower == 'phosphorus':
+                                        results['P'] = weight_clean
+                                        print(f"Found P: {weight_clean}", file=sys.stderr)
+                                    elif '1-lpc' in param_lower or 'lysopc(16:0)' in param_lower:
+                                        lpc_components['1-LPC'] = weight_float
+                                        print(f"Found 1-LPC: {weight_float}", file=sys.stderr)
+                                    elif '2-lpc' in param_lower or 'lysopc(18:' in param_lower:
+                                        lpc_components['2-LPC'] = weight_float
+                                        print(f"Found 2-LPC: {weight_float}", file=sys.stderr)
+                                    elif param_lower == 'sum' or 'total' in param_lower:
+                                        results['PL'] = weight_clean
+                                        print(f"Found PL (Sum): {weight_clean}", file=sys.stderr)
                             
-                            # Map specific parameters
-                            param_lower = parameter.lower().strip()
+                            # Process Sum row separately if found
+                            if sum_row_data:
+                                row_num, parameter, weight_value = sum_row_data
+                                try:
+                                    weight_clean = clean_coa_value(weight_value, parameter)
+                                    weight_float = float(weight_clean.replace(',', '.'))
+                                    results['PL'] = weight_clean
+                                    print(f"Added PL from Sum row: {weight_clean}", file=sys.stderr)
+                                except (ValueError, TypeError):
+                                    print(f"Could not parse Sum weight value: '{weight_value}'", file=sys.stderr)
                             
-                            if param_lower == 'pc' or 'phosphatidylcholine' in param_lower:
-                                results['PC'] = weight_clean
-                                print(f"Found PC: {weight_clean}", file=sys.stderr)
-                            elif param_lower == 'pe' or 'phosphatidylethanolamine' in param_lower:
-                                results['PE'] = weight_clean
-                                print(f"Found PE: {weight_clean}", file=sys.stderr)
-                            elif param_lower == 'pi' or 'phosphatidylinositol' in param_lower:
-                                results['PI'] = weight_clean
-                                print(f"Found PI: {weight_clean}", file=sys.stderr)
-                            elif param_lower == 'pa' or 'phosphatidic acid' in param_lower:
-                                results['PA'] = weight_clean
-                                print(f"Found PA: {weight_clean}", file=sys.stderr)
-                            elif param_lower == 'p' or param_lower == 'phosphorus':
-                                results['P'] = weight_clean
-                                print(f"Found P: {weight_clean}", file=sys.stderr)
-                            elif '1-lpc' in param_lower or 'lysopc(16:0)' in param_lower:
-                                lpc_components['1-LPC'] = weight_float
-                                print(f"Found 1-LPC: {weight_float}", file=sys.stderr)
-                            elif '2-lpc' in param_lower or 'lysopc(18:' in param_lower:
-                                lpc_components['2-LPC'] = weight_float
-                                print(f"Found 2-LPC: {weight_float}", file=sys.stderr)
-                            elif param_lower == 'sum' or 'total' in param_lower:
-                                results['PL'] = weight_clean
-                                print(f"Found PL (Sum): {weight_clean}", file=sys.stderr)
+                            # Process Phosphorus row separately if found
+                            if phosphorus_row_data:
+                                row_num, parameter, weight_value = phosphorus_row_data
+                                try:
+                                    weight_clean = clean_coa_value(weight_value, parameter)
+                                    weight_float = float(weight_clean.replace(',', '.'))
+                                    results['P'] = weight_clean
+                                    print(f"Added P from Phosphorus row: {weight_clean}", file=sys.stderr)
+                                except (ValueError, TypeError):
+                                    print(f"Could not parse Phosphorus weight value: '{weight_value}'", file=sys.stderr)
+                        else:
+                            # Original extraction logic for well-formed tables
+                            for row_num, row in enumerate(table[1:], 1):  # Skip header
+                                if not row or len(row) <= max(weight_col_idx, parameter_col_idx or 0):
+                                    continue
+                                
+                                parameter = str(row[parameter_col_idx] if parameter_col_idx is not None else row[0] or "").strip()
+                                weight_value = str(row[weight_col_idx] or "").strip()
+                                
+                                print(f"Row {row_num}: parameter='{parameter}', weight='{weight_value}'", file=sys.stderr)
+                                
+                                if not parameter or not weight_value:
+                                    continue
+                                
+                                # Clean and validate weight value using standard cleaning function
+                                try:
+                                    weight_clean = clean_coa_value(weight_value, parameter)
+                                    weight_float = float(weight_clean.replace(',', '.'))
+                                    print(f"Parsed weight: {weight_float} (cleaned from '{weight_value}')", file=sys.stderr)
+                                except (ValueError, TypeError):
+                                    print(f"Could not parse weight value: '{weight_value}'", file=sys.stderr)
+                                    continue
+                                
+                                # Map specific parameters
+                                param_lower = parameter.lower().strip()
+                                
+                                if param_lower == 'pc' or 'phosphatidylcholine' in param_lower:
+                                    results['PC'] = weight_clean
+                                    print(f"Found PC: {weight_clean}", file=sys.stderr)
+                                elif param_lower == 'pe' or 'phosphatidylethanolamine' in param_lower:
+                                    results['PE'] = weight_clean
+                                    print(f"Found PE: {weight_clean}", file=sys.stderr)
+                                elif param_lower == 'pi' or 'phosphatidylinositol' in param_lower:
+                                    results['PI'] = weight_clean
+                                    print(f"Found PI: {weight_clean}", file=sys.stderr)
+                                elif param_lower == 'pa' or 'phosphatidic acid' in param_lower:
+                                    results['PA'] = weight_clean
+                                    print(f"Found PA: {weight_clean}", file=sys.stderr)
+                                elif param_lower == 'p' or param_lower == 'phosphorus':
+                                    results['P'] = weight_clean
+                                    print(f"Found P: {weight_clean}", file=sys.stderr)
+                                elif '1-lpc' in param_lower or 'lysopc(16:0)' in param_lower:
+                                    lpc_components['1-LPC'] = weight_float
+                                    print(f"Found 1-LPC: {weight_float}", file=sys.stderr)
+                                elif '2-lpc' in param_lower or 'lysopc(18:' in param_lower:
+                                    lpc_components['2-LPC'] = weight_float
+                                    print(f"Found 2-LPC: {weight_float}", file=sys.stderr)
+                                elif param_lower == 'sum' or 'total' in param_lower:
+                                    results['PL'] = weight_clean
+                                    print(f"Found PL (Sum): {weight_clean}", file=sys.stderr)
                         
                         # Calculate LPC as sum of 1-LPC and 2-LPC
                         if '1-LPC' in lpc_components and '2-LPC' in lpc_components:
                             lpc_sum = lpc_components['1-LPC'] + lpc_components['2-LPC']
-                            results['LPC'] = str(lpc_sum)
-                            print(f"Calculated LPC: {lpc_sum} (1-LPC: {lpc_components['1-LPC']} + 2-LPC: {lpc_components['2-LPC']})", file=sys.stderr)
+                            # Round to 2 decimal places to avoid floating-point precision issues
+                            lpc_sum_rounded = round(lpc_sum, 2)
+                            results['LPC'] = str(lpc_sum_rounded)
+                            print(f"Calculated LPC: {lpc_sum_rounded} (1-LPC: {lpc_components['1-LPC']} + 2-LPC: {lpc_components['2-LPC']})", file=sys.stderr)
                         elif '1-LPC' in lpc_components:
-                            results['LPC'] = str(lpc_components['1-LPC'])
+                            results['LPC'] = str(round(lpc_components['1-LPC'], 2))
                             print(f"Using 1-LPC only: {lpc_components['1-LPC']}", file=sys.stderr)
                         elif '2-LPC' in lpc_components:
-                            results['LPC'] = str(lpc_components['2-LPC'])
+                            results['LPC'] = str(round(lpc_components['2-LPC'], 2))
                             print(f"Using 2-LPC only: {lpc_components['2-LPC']}", file=sys.stderr)
                         
                         print(f"Final results from table {table_num + 1}: {results}", file=sys.stderr)
@@ -799,27 +966,24 @@ def extract_parameters_regex(raw_text: str, columns: list[str], pdf_path: str = 
             except (ValueError, TypeError):
                 pass
 
-    # Calculate Heavy Metals sum ONLY if there's an explicit Heavy Metals section in the document
+    # Calculate Heavy Metals sum if Heavy Metals column exists and we have individual metal values
     heavy_metals_key = map_to_available_key(["Heavy Metals"], columns)
     if heavy_metals_key:
-        # Check if document explicitly mentions "Heavy Metals" as a section
-        heavy_metals_section_exists = bool(re.search(r"Heavy\s+Metals", text, flags=re.IGNORECASE))
+        heavy_metals_sum = 0
+        heavy_metals_components = {}
         
-        if heavy_metals_section_exists:
-            heavy_metals_sum = 0
-            heavy_metals_components = {}
-            
-            # Only include specific metals for Heavy Metals calculation
-            for metal in ['Arsenic', 'Cadmium', 'Lead', 'Mercury']:
-                if metal in metals_data:
-                    heavy_metals_sum += metals_data[metal]
-                    heavy_metals_components[metal] = metals_data[metal]
-            
-            if heavy_metals_components:  # At least one heavy metal found
-                out[heavy_metals_key] = str(heavy_metals_sum)
-                print(f"Heavy Metals calculation (explicit section found): {heavy_metals_components} = {heavy_metals_sum}", file=sys.stderr)
+        # Include specific metals for Heavy Metals calculation
+        # Heavy metals typically include: Arsenic, Cadmium, Lead, Mercury
+        for metal in ['Arsenic', 'Cadmium', 'Lead', 'Mercury']:
+            if metal in metals_data:
+                heavy_metals_sum += metals_data[metal]
+                heavy_metals_components[metal] = metals_data[metal]
+        
+        if heavy_metals_components:  # At least one heavy metal found
+            out[heavy_metals_key] = str(heavy_metals_sum)
+            print(f"Heavy Metals calculation: {heavy_metals_components} = {heavy_metals_sum}", file=sys.stderr)
         else:
-            print(f"Heavy Metals: No explicit 'Heavy Metals' section found, skipping calculation even though individual metals exist", file=sys.stderr)
+            print(f"Heavy Metals: No individual metals (Arsenic, Cadmium, Lead, Mercury) found for calculation", file=sys.stderr)
 
     # Microbiology
     ent_val = capture(r"Enterobacteriaceae\s*([^\n\r]*)")
@@ -1231,33 +1395,36 @@ def process_microbiology_values(result: dict, raw_text: str) -> dict:
     microbe_fields = ['Enterobacteriaceae', 'Coliforms (in 1g)', 'E. coli', 'Total Plate Count', 'Total Viable count']
     
     # Look for these values in raw text with both scientific notation and regular numbers
+    # CRITICAL: Patterns must be strict to avoid false positives from accreditation numbers, dates, etc.
     microbiology_patterns = {
         'Total Plate Count': [
-            r'Total\s+plate\s+count[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
-            r'Total\s+plate\s+count[^0-9]*30°?C[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
-            r'TPC[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu'
+            r'Total\s+plate\s+count[^\n]{0,50}?(\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',
+            r'Total\s+plate\s+count[^\n]{0,50}?30°?C[^\n]{0,30}?(\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',
+            r'TPC[^\n]{0,30}?(\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu'
         ],
         'Total Viable count': [
-            r'Total\s+viable\s+count[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
-            r'TVC[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu'
+            r'Total\s+viable\s+count[^\n]{0,50}?(\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',
+            r'TVC[^\n]{0,30}?(\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu'
         ],
         'Enterobacteriaceae': [
-            r'Enterobacteriaceae[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',  # <10 or < 10
-            r'Enterobacteriaceae[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',      # Regular numbers
-            r'Enterobacteriaceae[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)',            # <10 without cfu
-            r'Enterobacteriaceae[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)'                 # Regular numbers without cfu
+            r'Enterobacteriaceae[^\n]{0,50}?(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',  # <10 or < 10
+            r'Enterobacteriaceae[^\n]{0,50}?(\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',      # Regular numbers
+            r'Enterobacteriaceae[^\n]{0,50}?(Not\s+detected|Negative|nd)',           # Not detected
+            r'Enterobacteriaceae[^\n]{0,50}?(<\s*\d+)',                              # <10 without cfu (short range)
         ],
         'Coliforms (in 1g)': [
-            r'Coliforms?[^0-9]*(?:in\s+1\s?g)?[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
-            r'Coliforms?[^0-9]*(?:in\s+1\s?g)?[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
-            r'Coliforms?[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)',
-            r'Coliforms?[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)'
+            # STRICT patterns - only match if we have clear context with cfu, detected, or specific format
+            r'Coliforms?[^\n]{0,50}?(?:in\s+1\s?g)?[^\n]{0,30}?(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',
+            r'Coliforms?[^\n]{0,50}?(?:in\s+1\s?g)?[^\n]{0,30}?(\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',
+            r'Coliforms?[^\n]{0,50}?(Not\s+detected|Negative|nd)(?:\s+per\s+|\s+in\s+)',  # Not detected per 1g
+            # Only match numeric value if it's followed by specific units or context (within 20 chars)
+            r'Coliforms?[^\n]{0,30}?(\d+[.,]?\d*)\s*(?:per|in|\/)\s*(?:1\s*g|gram)',
         ],
         'E. coli': [
-            r'E\.?\s*coli[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
-            r'E\.?\s*coli[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)[^a-z]*cfu',
-            r'E\.?\s*coli[^0-9]*(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)',
-            r'E\.?\s*coli[^0-9]*(\d+[.,]?\d*(?:E[+-]?\d+)?)'
+            r'E\.?\s*coli[^\n]{0,50}?(<\s*\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',
+            r'E\.?\s*coli[^\n]{0,50}?(\d+[.,]?\d*(?:E[+-]?\d+)?)\s*cfu',
+            r'E\.?\s*coli[^\n]{0,50}?(Not\s+detected|Negative|nd)',
+            r'E\.?\s*coli[^\n]{0,30}?(<\s*\d+)',
         ]
     }
     
@@ -1269,21 +1436,43 @@ def process_microbiology_values(result: dict, raw_text: str) -> dict:
         for pattern in patterns:
             match = re.search(pattern, raw_text, flags=re.IGNORECASE)
             if match:
+                # CRITICAL: Check the context around the match to filter out false positives
+                # Extract context before the matched value to check for accreditation numbers, etc.
+                match_start = match.start()
+                context_start = max(0, match_start - 100)
+                context = raw_text[context_start:match.end()]
+                
+                # Filter out matches that are clearly accreditation numbers or references
+                if re.search(r'accreditation\s+number|accredited\s+method|L\d{3,4}|reference\s+number', context, flags=re.IGNORECASE):
+                    print(f"{field_name}: Skipping match - found accreditation context in: {repr(context[-50:])})", file=sys.stderr)
+                    continue  # Skip this match, try next pattern
+                
                 scientific_value = match.group(1)
+                
+                # Check if this is a "Not detected", "Negative", or "nd" result
+                if re.search(r'(?i)not\s+detected|negative|^nd$', scientific_value):
+                    result[field_name] = 'Negative'
+                    print(f"{field_name}: Found 'Not detected' pattern", file=sys.stderr)
+                    break  # Found a match, stop looking
+                
                 try:
                     # Handle "<" symbol for "less than" values (e.g., "<10", "< 10")
                     if '<' in scientific_value:
                         # Values like "<10" or "< 10" should be treated as "Negative"
                         result[field_name] = 'Negative'
+                        print(f"{field_name}: Found '<' less than value: {scientific_value}", file=sys.stderr)
                     else:
                         numeric_value = parse_scientific_notation(scientific_value)
                         if numeric_value < 10:
                             result[field_name] = 'Negative'
+                            print(f"{field_name}: Value {numeric_value} < 10, setting to Negative", file=sys.stderr)
                         else:
                             # Display as clean number without units
                             result[field_name] = str(int(numeric_value))
+                            print(f"{field_name}: Setting to value {int(numeric_value)}", file=sys.stderr)
                     break  # Found a match, stop looking
-                except ValueError:
+                except ValueError as e:
+                    print(f"{field_name}: Failed to parse value '{scientific_value}': {e}", file=sys.stderr)
                     continue
     
     # Process existing values that might already be in the result
