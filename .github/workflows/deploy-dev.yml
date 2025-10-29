@@ -51,6 +51,7 @@ jobs:
             --exclude=node_modules \
             dist/ \
             generated/ \
+            src/ \
             package.json \
             package-lock.json \
             prisma/ \
